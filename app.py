@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import datetime
+import re
 from streamlit_gsheets import GSheetsConnection
 
 # --- Page Config ---
@@ -22,7 +23,7 @@ st.markdown("""
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Resilient Scraper Function ---
+# --- Advanced Targeted Scraper ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/workout/"
     headers = {
@@ -32,37 +33,54 @@ def scrape_crossfit_wod():
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        main_content = soup.find('div', class_='content')
-        if not main_content:
-            main_content = soup.find('article')
+        # 1. Targeted Hunt: CrossFit hides the WOD in an 'article' or a 'content' div
+        article = soup.find('article') or soup.find('div', class_='content')
+        
+        if not article:
+            return {"title": "Error", "workout": "Workout container not found.", "scaling": "", "score_type": "Other"}
 
-        if not main_content:
-            return {"title": "Error", "workout": "Could not find workout container.", "scaling": "", "score_type": "Other"}
+        # 2. Extract Title (e.g., 'Isabel')
+        # We look for the first header that isn't a site-wide nav link
+        title_text = "Today's WOD"
+        possible_titles = article.find_all(['h1', 'h2', 'h3'])
+        for t in possible_titles:
+            text = t.get_text().strip()
+            # If it's short and doesn't look like a date or nav, it's the title
+            if text and len(text) < 30 and not any(x in text.lower() for x in ['crossfit', 'gym', 'courses']):
+                title_text = text
+                break
+        
+        # 3. Targeted Body Extraction
+        # We specifically extract paragraphs and lists to avoid the <div> soup
+        content_elements = article.find_all(['p', 'ul', 'li', 'h4'])
+        
+        # JUNK FILTER: Phrases that CrossFit uses for marketing, not the workout
+        junk = ["find a gym", "open a crossfit", "getting started", "what is crossfit", 
+                "cure", "level 1", "subscribe", "courses", "view more", "military"]
+        
+        cleaned_body = []
+        scaling_section = []
+        is_scaling = False
+        
+        for elem in content_elements:
+            text = elem.get_text().strip()
+            if not text or any(j in text.lower() for j in junk):
+                continue
+            
+            # Switch to scaling section if keyword found
+            if "scaling" in text.lower() or "beginner" in text.lower() or "intermediate" in text.lower():
+                is_scaling = True
+            
+            if is_scaling:
+                scaling_section.append(text)
+            else:
+                cleaned_body.append(text)
 
-        title_tag = main_content.find('h3')
-        title_text = title_tag.get_text().strip() if title_tag else "Today's WOD"
+        workout_text = "\n\n".join(cleaned_body)
+        scaling_text = "\n\n".join(scaling_section) if scaling_section else "Scaling: Adjust for back safety and YMCA equipment."
         
-        junk_phrases = ["Open a CrossFit Gym", "Find a gym", "Getting Started", "What is CrossFit?", 
-                        "CrossFit Is the Cure", "Level 1", "Subscribe", "© 2025", "Courses", "View More"]
-        
-        raw_lines = main_content.get_text(separator="\n").split("\n")
-        cleaned_lines = []
-        for line in raw_lines:
-            line = line.strip()
-            if line and not any(phrase.lower() in line.lower() for phrase in junk_phrases):
-                cleaned_lines.append(line)
-        
-        full_text = "\n".join(cleaned_lines)
-        
-        if "Scaling:" in full_text:
-            parts = full_text.split("Scaling:")
-            workout_text = parts[0].strip()
-            scaling_text = "Scaling:\n" + parts[1].strip()
-        else:
-            workout_text = full_text
-            scaling_text = "Scaling: Adjust for back safety and YMCA equipment."
-
-        score_type = "AMRAP" if ("AMRAP" in workout_text.upper() or "REPS" in workout_text.upper()) else "For Time"
+        # 4. Smart Score Detection
+        score_type = "AMRAP" if any(x in workout_text.upper() for x in ["AMRAP", "REPS", "ROUNDS"]) else "For Time"
             
         return {
             "title": title_text,
@@ -71,7 +89,7 @@ def scrape_crossfit_wod():
             "score_type": score_type
         }
     except Exception as e:
-        return {"title": "Scraper Error", "workout": f"Failed to fetch: {e}", "scaling": "", "score_type": "Other"}
+        return {"title": "Scraper Error", "workout": f"Failed: {e}", "scaling": "", "score_type": "Other"}
 
 # --- Data Handshake ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -111,7 +129,7 @@ with tab1:
     scaled_workout = st.text_area(
         "Modify movements for back safety:",
         value=wod['scaling'],
-        height=250
+        height=300
     )
 
 with tab2:
@@ -127,7 +145,7 @@ with tab2:
             result = st.text_input("Score (Total Reps/Rounds)", placeholder="e.g. 8 Rounds + 12")
         else:
             result = st.text_input("Score (Time)", placeholder="e.g. 14:22")
-        notes = st.text_area("Internal Dialogue / Back Status", placeholder="Felt stiffness in L5-S1...")
+        notes = st.text_area("Internal Dialogue / Back Status", placeholder="Felt stiffness in L5-S1 during cleans...")
 
     if st.button("Save to TriDrive Ledger"):
         entry = {
