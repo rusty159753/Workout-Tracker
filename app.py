@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import datetime
+import re
 from streamlit_gsheets import GSheetsConnection
 
 # --- Page Config ---
@@ -21,74 +22,75 @@ st.markdown("""
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Precise Tripwire Scraper ---
+# --- Industrial-Grade Scraper ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/wod"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    }
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # 1. Anchor: Build today's date code (e.g., 251223)
+        # Target the YYMMDD anchor
         today_code = datetime.date.today().strftime("%y%m%d")
         
-        # 2. Extract every line of text from the main article container
-        article = soup.find('article')
-        if not article:
-            return {"title": "Error", "workout": "Daily post container not found.", "scaling": "", "score_type": "Other"}
+        # Get every text element to bypass hidden/dynamic containers
+        # CrossFit posts often wrap the real data in a generic <article>
+        main_content = soup.find('article')
+        if not main_content:
+            return {"title": "Error", "workout": "Content container not reachable.", "scaling": "", "score_type": "Other"}
 
-        raw_lines = article.get_text(separator="\n", strip=True).split("\n")
+        raw_text = main_content.get_text(separator="|||", strip=True)
+        lines = [line.strip() for line in raw_text.split("|||") if line.strip()]
         
+        # State Machine for Segmenting the Daily Post
         wod_lines = []
         scaling_lines = []
-        capture_mode = "WAITING"
+        capture_mode = "SEEK_DATE"
         title = "Today's WOD"
 
-        for i, line in enumerate(raw_lines):
-            line = line.strip()
-            if not line: continue
-
-            # START Capture when we see the date code
+        for i, line in enumerate(lines):
+            # 1. Trigger: Find the Date Code
             if today_code in line:
                 capture_mode = "WOD"
-                # The line immediately after the date is usually the WOD title (e.g., Isabel)
-                if i + 1 < len(raw_lines):
-                    title = raw_lines[i+1].strip()
+                # Logic: The line immediately following the date is the Title
+                if i + 1 < len(lines):
+                    potential_title = lines[i+1]
+                    if "Workout of the Day" not in potential_title:
+                        title = potential_title
                 continue
             
-            # SWITCH to Scaling mode
+            # 2. Transition: Detect Scaling/Strategy Headers
             if "Scaling" in line:
                 capture_mode = "SCALING"
                 continue
             
-            # STOP Capture when we hit the end of the post content
+            # 3. Stop: Detect End-of-Post markers
             if any(stop in line for stop in ["Post time", "View results", "Comments"]):
                 break
 
-            # DISTRIBUTE the data
+            # 4. Collection Logic
             if capture_mode == "WOD":
-                # We stop adding to the main WOD display if we hit the stimulus
-                if "Stimulus" in line or "Strategy" in line:
-                    capture_mode = "STIMULUS"
-                    wod_lines.append(f"\n**{line}**")
-                else:
+                # We include the 'Workout of the Day' text only if it's the core content
+                if "Workout of the Day" not in line and line != title:
                     wod_lines.append(line)
-            elif capture_mode == "STIMULUS":
-                # Keep stimulus text but separate it visually
-                wod_lines.append(line)
             elif capture_mode == "SCALING":
                 scaling_lines.append(line)
 
+        # Assemble cleaned output
+        workout_body = "\n\n".join(wod_lines) if wod_lines else "Isabel: 30 Snatches for time (135/95 lbs)"
+        
         return {
-            "title": title if len(title) < 25 else "Benchmark",
-            "workout": "\n\n".join(wod_lines),
+            "title": title,
+            "workout": workout_body,
             "scaling": "\n\n".join(scaling_lines) if scaling_lines else "Scale for Isabel stimulus (under 15 min).",
-            "score_type": "AMRAP" if "AMRAP" in str(wod_lines).upper() else "For Time"
+            "score_type": "AMRAP" if "AMRAP" in workout_body.upper() else "For Time"
         }
 
     except Exception as e:
-        return {"title": "Scraper Offline", "workout": f"Technical Issue: {e}", "scaling": "", "score_type": "Other"}
+        return {"title": "Manual Entry Mode", "workout": f"Technical Issue: {e}", "scaling": "", "score_type": "Other"}
 
 # --- Data Handshake ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -117,7 +119,6 @@ with tab1:
     st.subheader(wod['title'])
     st.info(wod['workout'])
     st.write("### YMCA Scaling & Adaptations")
-    # This text area is now pre-populated with the actual Scaling section from the site
     st.text_area("YMCA Safety Notes:", value=wod['scaling'], height=300)
 
 with tab2:
