@@ -5,21 +5,22 @@ import pandas as pd
 import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# --- Page Config & Styling ---
+# --- Page Config & Pro Styling ---
 st.set_page_config(page_title="TriDrive Performance", page_icon="🚴‍♂️", layout="centered")
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #fafafa; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
     .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
-    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 5px; font-weight: bold; }
+    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 8px; font-weight: bold; padding: 10px; }
+    .stInfo p { margin-bottom: 15px; }
     </style>
     """, unsafe_allow_html=True)
 
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Step-by-Step Modular Scraper ---
+# --- Advanced Structural Scraper ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/wod"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
@@ -31,47 +32,47 @@ def scrape_crossfit_wod():
         
         article = soup.find('article')
         if not article:
-            return {"title": "Error", "workout": "Content not reachable.", "stimulus": "", "scaling": "", "cues": ""}
+            return {"title": "Rest Day", "workout": "No workout found.", "stimulus": "", "scaling": "", "cues": ""}
 
-        # Convert entire article into a list of clean text lines
-        raw_text = article.get_text(separator="|||", strip=True)
-        lines = [line.strip() for line in raw_text.split("|||") if line.strip()]
+        # Extracting with single newline to preserve original list flow
+        raw_text = article.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
 
-        # Helper function to grab text between two markers
-        def get_section(start_key, end_keys, include_start=False):
-            capture = []
+        def get_section_robust(start_trigger, stop_triggers):
+            section_lines = []
             found_start = False
             for line in lines:
-                if not found_start and start_key in line:
-                    found_start = True
-                    if include_start: capture.append(line)
-                    continue
-                if found_start:
-                    if any(end in line for end in end_keys):
+                if not found_start:
+                    # Target date or exact header match
+                    if (start_trigger.lower() in line.lower() and len(line) < 30) or (start_trigger == today_code and today_code in line):
+                        found_start = True
+                        continue
+                else:
+                    # Stop if we hit a future header
+                    if any(stop.lower() in line.lower() and len(line) < 30 for stop in stop_triggers):
                         break
-                    capture.append(line)
-            return "\n\n".join(capture)
+                    
+                    # Formatting weights for visibility
+                    if any(char in line for char in ['♀', '♂', 'lb', 'kg']):
+                        section_lines.append(f"**{line}**")
+                    else:
+                        section_lines.append(line)
+            return "\n\n".join(section_lines)
 
-        # STEP 1: Find Title (Line immediately after Date)
+        # 1. Title Capture
         title = "Today's WOD"
         for i, line in enumerate(lines):
             if today_code in line and i+1 < len(lines):
                 title = lines[i+1]
                 break
 
-        # STEP 2: Scrape Workout (Date -> Stimulus)
-        workout = get_section(today_code, ["Stimulus", "Scaling", "Post time"])
-        # Clean up title from workout body if it was captured
-        workout = workout.replace(title, "").strip()
+        # 2. Sequential Extraction
+        workout = get_section_robust(today_code, ["Stimulus", "Scaling", "Coaching cues", "Post time"])
+        workout = workout.replace(title, "").strip() # Clean redundancy
 
-        # STEP 3: Scrape Stimulus (Stimulus -> Scaling)
-        stimulus = get_section("Stimulus", ["Scaling", "Coaching cues", "Post time"])
-
-        # STEP 4: Scrape Scaling (Scaling -> Coaching cues)
-        scaling = get_section("Scaling", ["Coaching cues", "Post time"])
-
-        # STEP 5: Scrape Cues (Coaching cues -> Post time)
-        cues = get_section("Coaching cues", ["Post time", "View results"])
+        stimulus = get_section_robust("Stimulus", ["Scaling", "Coaching cues", "Post time"])
+        scaling = get_section_robust("Scaling", ["Coaching cues", "Post time"])
+        cues = get_section_robust("Coaching cues", ["Post time", "View results"])
 
         return {
             "title": title,
@@ -111,14 +112,17 @@ with tab1:
     st.info(wod['workout'])
     st.markdown("---")
     
-    with st.expander("⚡ Stimulus & Strategy"):
-        st.write(wod['stimulus'] if wod['stimulus'] else "Refer to CrossFit site.")
+    if wod['stimulus']:
+        with st.expander("⚡ Stimulus & Strategy"):
+            st.markdown(wod['stimulus'])
 
-    with st.expander("⚖️ Scaling Options"):
-        st.write(wod['scaling'] if wod['scaling'] else "Scale to maintain speed.")
+    if wod['scaling']:
+        with st.expander("⚖️ Scaling Options"):
+            st.markdown(wod['scaling'])
 
-    with st.expander("🧠 Coaching Cues"):
-        st.write(wod['cues'] if wod['cues'] else "Keep bar close, heels down.")
+    if wod['cues']:
+        with st.expander("🧠 Coaching Cues"):
+            st.markdown(wod['cues'])
 
 with tab2:
     st.subheader("Performance Log")
