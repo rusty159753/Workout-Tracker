@@ -29,27 +29,28 @@ def scrape_crossfit_wod():
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Targets only the main workout text, avoiding the header menus
-        workout_div = soup.find('div', class_='content')
-        if workout_div:
-            # Removes common navigation text often pulled in
-            for nav in workout_div.find_all(['nav', 'header', 'footer']):
-                nav.decompose()
-            workout_text = workout_div.get_text(separator="\n").strip()
+        # New logic: Looks for the main container that holds the actual workout text
+        workout_container = soup.find('div', class_='content')
+        if not workout_container:
+            workout_container = soup.find('article') # Backup selector
+            
+        if workout_container:
+            # Strip out links and extra navigation junk
+            for extra in workout_container.find_all(['nav', 'header', 'footer', 'a']):
+                extra.decompose()
+            workout_text = workout_container.get_text(separator="\n").strip()
         else:
-            workout_text = "Workout details not found. Enter manually below."
+            workout_text = "Workout content not detected. Please check crossfit.com directly."
 
         return {
             "title": "Today's WOD",
             "workout": workout_text,
-            "scaling": "Scaling: Adjust for back safety.",
+            "scaling": "Scaling: Adjust for back safety and YMCA equipment.",
             "score_type": "AMRAP" if "AMRAP" in workout_text.upper() else "For Time"
         }
     except Exception as e:
         return {"title": "Scraper Error", "workout": str(e), "scaling": "", "score_type": "Other"}
-        
-# --- Data Handshake ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+
 
 def save_entry(data):
     try:
