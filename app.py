@@ -32,7 +32,6 @@ def scrape_crossfit_wod():
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # 1. Targeted Container Search
         main_content = soup.find('div', class_='content')
         if not main_content:
             main_content = soup.find('article')
@@ -40,13 +39,9 @@ def scrape_crossfit_wod():
         if not main_content:
             return {"title": "Error", "workout": "Could not find workout container.", "scaling": "", "score_type": "Other"}
 
-        # 2. Extract Title (Look for the first h3 or specific class)
-        # On days like today, the title is "Isabel"
         title_tag = main_content.find('h3')
         title_text = title_tag.get_text().strip() if title_tag else "Today's WOD"
         
-        # 3. Clean and Extract Text
-        # We filter out known junk navigation links
         junk_phrases = ["Open a CrossFit Gym", "Find a gym", "Getting Started", "What is CrossFit?", 
                         "CrossFit Is the Cure", "Level 1", "Subscribe", "© 2025", "Courses", "View More"]
         
@@ -59,8 +54,6 @@ def scrape_crossfit_wod():
         
         full_text = "\n".join(cleaned_lines)
         
-        # 4. Split Workout and Scaling
-        # We look for the "Scaling" keyword to break the content into two areas
         if "Scaling:" in full_text:
             parts = full_text.split("Scaling:")
             workout_text = parts[0].strip()
@@ -69,10 +62,7 @@ def scrape_crossfit_wod():
             workout_text = full_text
             scaling_text = "Scaling: Adjust for back safety and YMCA equipment."
 
-        # 5. Smart Scoring Detection
-        score_type = "For Time"
-        if "AMRAP" in workout_text.upper() or "REPS" in workout_text.upper():
-            score_type = "AMRAP"
+        score_type = "AMRAP" if ("AMRAP" in workout_text.upper() or "REPS" in workout_text.upper()) else "For Time"
             
         return {
             "title": title_text,
@@ -123,8 +113,6 @@ with tab1:
         value=wod['scaling'],
         height=250
     )
-    # Allows you to edit and persist the scaling text in session state
-    st.session_state.wod_data['scaling'] = scaled_workout
 
 with tab2:
     st.subheader("Performance Log")
@@ -170,114 +158,4 @@ with tab3:
             st.warning("No data found in Google Sheets. Start logging to see analytics!")
     except Exception as e:
         st.info("Awaiting initial data connection for visualization.")
-        if workout_container:
-            # Strip out links and extra navigation junk
-            for extra in workout_container.find_all(['nav', 'header', 'footer', 'a']):
-                extra.decompose()
-            workout_text = workout_container.get_text(separator="\n").strip()
-        else:
-            workout_text = "Workout content not detected. Please check crossfit.com directly."
-
-        return {
-            "title": "Today's WOD",
-            "workout": workout_text,
-            "scaling": "Scaling: Adjust for back safety and YMCA equipment.",
-            "score_type": "AMRAP" if "AMRAP" in workout_text.upper() else "For Time"
-        }
-    except Exception as e:
-        return {"title": "Scraper Error", "workout": str(e), "scaling": "", "score_type": "Other"}
-
-
-def save_entry(data):
-    try:
-        # Fetch current data to check schema
-        existing_data = conn.read(ttl=0)
-        new_row = pd.DataFrame([data])
         
-        if existing_data.empty:
-            updated_df = new_row
-        else:
-            updated_df = pd.concat([existing_data, new_row], ignore_index=True)
-            
-        conn.update(data=updated_df)
-        return True
-    except Exception as e:
-        st.error(f"Save failed: {e}")
-        return False
-
-# --- UI Header ---
-st.title("TRI⚡DRIVE")
-st.caption("43M | 150-160 lbs | Sciatica-Resilient Performance Hub")
-
-# --- App Logic ---
-if st.session_state.wod_data is None:
-    with st.spinner("Scraping Daily WOD..."):
-        st.session_state.wod_data = scrape_crossfit_wod()
-
-wod = st.session_state.wod_data
-
-tab1, tab2, tab3 = st.tabs(["🔥 The Daily Drive", "📊 Metrics", "📈 Apex Analytics"])
-
-with tab1:
-    st.subheader(wod['title'])
-    st.info(wod['workout'])
-    
-    st.write("### YMCA Scaling & Adaptations")
-    scaled_workout = st.text_area(
-        "Modify movements for back safety:",
-        value=wod['scaling'],
-        height=200
-    )
-
-with tab2:
-    st.subheader("Performance Log")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # High-visibility sliders for gym floor use
-        sciatica_score = st.slider("Sciatica/Back Sensitivity (1-10)", 1, 10, 2)
-        weight = st.slider("Body Weight (lbs)", 145, 170, 155)
-    
-    with col2:
-        # Dynamic input based on WOD type
-        if wod['score_type'] == "AMRAP":
-            result = st.text_input("Score (Total Reps/Rounds)", placeholder="e.g. 8 Rounds + 12")
-        else:
-            result = st.text_input("Score (Time)", placeholder="e.g. 14:22")
-            
-        notes = st.text_area("Internal Dialogue / Back Status", placeholder="Felt stiffness in L5-S1 during cleans...")
-
-    if st.button("Save to TriDrive Ledger"):
-        entry = {
-            "Date": datetime.date.today().strftime("%Y-%m-%d"),
-            "WOD_Name": wod['title'],
-            "Result": result,
-            "Weight": weight,
-            "Sciatica_Score": sciatica_score,
-            "Notes": notes
-        }
-        if save_entry(entry):
-            st.success("Entry locked into Handshake!")
-            st.balloons()
-
-with tab3:
-    st.subheader("Visualizing Resilience")
-    try:
-        # Direct pull from the Google Sheet
-        history = conn.read(ttl=0)
-        if not history.empty:
-            # Sort data by date for proper charting
-            history['Date'] = pd.to_datetime(history['Date'])
-            history = history.sort_values('Date')
-            
-            st.write("### Sciatica vs. Weight Trends")
-            # Charts help identify if body weight increases trigger back pain
-            chart_data = history.set_index('Date')[['Sciatica_Score', 'Weight']]
-            st.line_chart(chart_data)
-            
-            st.write("### Recent Logs")
-            st.dataframe(history.tail(5), use_container_width=True)
-        else:
-            st.warning("No data found in Google Sheets. Start logging to see analytics!")
-    except Exception as e:
-        st.info("Awaiting initial data connection for visualization.")
