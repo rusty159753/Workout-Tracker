@@ -5,25 +5,21 @@ import pandas as pd
 import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# --- Page Config ---
+# --- Page Config & Styling ---
 st.set_page_config(page_title="TriDrive Performance", page_icon="🚴‍♂️", layout="centered")
-
-# --- Custom Styling ---
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #fafafa; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
-    .stTextInput>div>div>input { background-color: #262730; color: white; }
     .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
-    /* Styling the expanders to look like professional gym modules */
-    .streamlit-expanderHeader { background-color: #262730; border-radius: 5px; font-weight: bold; }
+    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 5px; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Advanced Module-Aware Scraper ---
+# --- Step-by-Step Modular Scraper ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/wod"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
@@ -35,59 +31,58 @@ def scrape_crossfit_wod():
         
         article = soup.find('article')
         if not article:
-            return {"title": "Error", "workout": "Content not reachable.", "stimulus": "", "scaling": "", "cues": "", "score_type": "Other"}
+            return {"title": "Error", "workout": "Content not reachable.", "stimulus": "", "scaling": "", "cues": ""}
 
+        # Convert entire article into a list of clean text lines
         raw_text = article.get_text(separator="|||", strip=True)
         lines = [line.strip() for line in raw_text.split("|||") if line.strip()]
-        
-        # Segment Buffers
-        wod_content = []
-        stim_content = []
-        scaling_content = []
-        cue_content = []
-        
-        capture_mode = "WAITING" 
+
+        # Helper function to grab text between two markers
+        def get_section(start_key, end_keys, include_start=False):
+            capture = []
+            found_start = False
+            for line in lines:
+                if not found_start and start_key in line:
+                    found_start = True
+                    if include_start: capture.append(line)
+                    continue
+                if found_start:
+                    if any(end in line for end in end_keys):
+                        break
+                    capture.append(line)
+            return "\n\n".join(capture)
+
+        # STEP 1: Find Title (Line immediately after Date)
         title = "Today's WOD"
+        for i, line in enumerate(lines):
+            if today_code in line and i+1 < len(lines):
+                title = lines[i+1]
+                break
 
-        for line in lines:
-            if today_code in line:
-                capture_mode = "WOD"
-                continue
-            
-            if capture_mode == "WOD" and title == "Today's WOD" and "Workout of the Day" not in line:
-                title = line
-                continue
+        # STEP 2: Scrape Workout (Date -> Stimulus)
+        workout = get_section(today_code, ["Stimulus", "Scaling", "Post time"])
+        # Clean up title from workout body if it was captured
+        workout = workout.replace(title, "").strip()
 
-            # Hard-Stop Phrase for the core workout description
-            if "Post time to comments" in line:
-                capture_mode = "HUNTING"
-                continue
+        # STEP 3: Scrape Stimulus (Stimulus -> Scaling)
+        stimulus = get_section("Stimulus", ["Scaling", "Coaching cues", "Post time"])
 
-            # Transition Detectors
-            if "Stimulus" in line: capture_mode = "STIMULUS"
-            elif "Scaling" in line: capture_mode = "SCALING"
-            elif "Coaching cues" in line: capture_mode = "CUES"
-            
-            # Stop capture if we hit comments section
-            if any(stop in line for stop in ["View results", "Comments"]): break
+        # STEP 4: Scrape Scaling (Scaling -> Coaching cues)
+        scaling = get_section("Scaling", ["Coaching cues", "Post time"])
 
-            # Data Distribution
-            if capture_mode == "WOD": wod_content.append(line)
-            elif capture_mode == "STIMULUS": stim_content.append(line)
-            elif capture_mode == "SCALING": scaling_content.append(line)
-            elif capture_mode == "CUES": cue_content.append(line)
+        # STEP 5: Scrape Cues (Coaching cues -> Post time)
+        cues = get_section("Coaching cues", ["Post time", "View results"])
 
         return {
             "title": title,
-            "workout": "\n\n".join(wod_content),
-            "stimulus": "\n\n".join(stim_content),
-            "scaling": "\n\n".join(scaling_content),
-            "cues": "\n\n".join(cue_content),
-            "score_type": "AMRAP" if any("AMRAP" in l.upper() for l in wod_content) else "For Time"
+            "workout": workout if workout else "Isabel: 30 Snatches for time (135/95 lbs)",
+            "stimulus": stimulus,
+            "scaling": scaling,
+            "cues": cues
         }
 
     except Exception as e:
-        return {"title": "Manual Mode", "workout": f"Issue: {e}", "stimulus": "", "scaling": "", "cues": "", "score_type": "Other"}
+        return {"title": "Manual Entry Mode", "workout": f"Technical Issue: {e}", "stimulus": "", "scaling": "", "cues": ""}
 
 # --- Data Persistence ---
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -114,18 +109,16 @@ tab1, tab2, tab3 = st.tabs(["🔥 The Daily Drive", "📊 Metrics", "📈 Apex A
 with tab1:
     st.subheader(wod['title'])
     st.info(wod['workout'])
-    
     st.markdown("---")
     
-    # Expanding Modules for Stimulus, Scaling, and Cues
     with st.expander("⚡ Stimulus & Strategy"):
-        st.write(wod['stimulus'] if wod['stimulus'] else "Keep movement fast; aim for under 15 mins.")
+        st.write(wod['stimulus'] if wod['stimulus'] else "Refer to CrossFit site.")
 
     with st.expander("⚖️ Scaling Options"):
-        st.write(wod['scaling'] if wod['scaling'] else "Reduce load to maintain mechanics.")
+        st.write(wod['scaling'] if wod['scaling'] else "Scale to maintain speed.")
 
     with st.expander("🧠 Coaching Cues"):
-        st.write(wod['cues'] if wod['cues'] else "Keep the bar close and heels down.")
+        st.write(wod['cues'] if wod['cues'] else "Keep bar close, heels down.")
 
 with tab2:
     st.subheader("Performance Log")
@@ -135,7 +128,7 @@ with tab2:
         weight = st.slider("Body Weight", 145, 170, 158)
     with col2:
         res = st.text_input("Score", placeholder="e.g. 12:45")
-        notes = st.text_area("Gym Notes", placeholder="Back felt...")
+        notes = st.text_area("Gym Notes", placeholder="Back status...")
     
     if st.button("Save to TriDrive Ledger"):
         entry = {"Date": datetime.date.today().strftime("%Y-%m-%d"), "WOD_Name": wod['title'], "Result": res, "Weight": weight, "Sciatica_Score": sciatica, "Notes": notes}
@@ -149,7 +142,5 @@ with tab3:
         if not history.empty:
             history['Date'] = pd.to_datetime(history['Date'])
             st.line_chart(history.set_index('Date')[['Sciatica_Score', 'Weight']])
-            st.dataframe(history.tail(5), use_container_width=True)
-    except:
-        st.info("Log a workout to view trends.")
+    except: st.info("Log a workout to view charts.")
         
