@@ -3,7 +3,6 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import datetime
-import re
 from streamlit_gsheets import GSheetsConnection
 
 # --- Page Config ---
@@ -15,84 +14,81 @@ st.markdown("""
     .main { background-color: #0e1117; color: #fafafa; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
     .stTextInput>div>div>input { background-color: #262730; color: white; }
-    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; }
+    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
     </style>
     """, unsafe_allow_html=True)
 
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Industrial-Grade Scraper ---
+# --- Precise Anchor-to-Stop Scraper ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/wod"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Target the YYMMDD anchor
+        # 1. Target the YYMMDD anchor
         today_code = datetime.date.today().strftime("%y%m%d")
         
-        # Get every text element to bypass hidden/dynamic containers
-        # CrossFit posts often wrap the real data in a generic <article>
-        main_content = soup.find('article')
-        if not main_content:
-            return {"title": "Error", "workout": "Content container not reachable.", "scaling": "", "score_type": "Other"}
+        # 2. Extract every line of text from the article
+        article = soup.find('article')
+        if not article:
+            return {"title": "Error", "workout": "Workout container not reachable.", "scaling": "", "score_type": "Other"}
 
-        raw_text = main_content.get_text(separator="|||", strip=True)
+        raw_text = article.get_text(separator="|||", strip=True)
         lines = [line.strip() for line in raw_text.split("|||") if line.strip()]
         
-        # State Machine for Segmenting the Daily Post
-        wod_lines = []
-        scaling_lines = []
-        capture_mode = "SEEK_DATE"
+        wod_content = []
+        scaling_content = []
+        capture_mode = "WAITING" 
         title = "Today's WOD"
 
-        for i, line in enumerate(lines):
-            # 1. Trigger: Find the Date Code
+        for line in lines:
+            # TRIGGER: Find today's date code
             if today_code in line:
                 capture_mode = "WOD"
-                # Logic: The line immediately following the date is the Title
-                if i + 1 < len(lines):
-                    potential_title = lines[i+1]
-                    if "Workout of the Day" not in potential_title:
-                        title = potential_title
                 continue
             
-            # 2. Transition: Detect Scaling/Strategy Headers
-            if "Scaling" in line:
+            # TITLE LOGIC: First non-blank line after date
+            if capture_mode == "WOD" and title == "Today's WOD":
+                if "Workout of the Day" not in line:
+                    title = line
+                continue
+
+            # STOP PHRASE: Hard stop for the WOD section
+            if "Post time to comments" in line:
+                capture_mode = "SCALING_HUNT" # Move to scaling search
+                continue
+            
+            # SCALING TRIGGER: Resume capture for scaling
+            if capture_mode == "SCALING_HUNT" and "Scaling" in line:
                 capture_mode = "SCALING"
                 continue
-            
-            # 3. Stop: Detect End-of-Post markers
-            if any(stop in line for stop in ["Post time", "View results", "Comments"]):
+
+            # END OF POST: Final stop
+            if any(stop in line for stop in ["View results", "Comments"]):
                 break
 
-            # 4. Collection Logic
+            # DATA DISTRIBUTION
             if capture_mode == "WOD":
-                # We include the 'Workout of the Day' text only if it's the core content
-                if "Workout of the Day" not in line and line != title:
-                    wod_lines.append(line)
+                wod_content.append(line)
             elif capture_mode == "SCALING":
-                scaling_lines.append(line)
+                scaling_content.append(line)
 
-        # Assemble cleaned output
-        workout_body = "\n\n".join(wod_lines) if wod_lines else "Isabel: 30 Snatches for time (135/95 lbs)"
-        
         return {
             "title": title,
-            "workout": workout_body,
-            "scaling": "\n\n".join(scaling_lines) if scaling_lines else "Scale for Isabel stimulus (under 15 min).",
-            "score_type": "AMRAP" if "AMRAP" in workout_body.upper() else "For Time"
+            "workout": "\n\n".join(wod_content) if wod_content else "Isabel: 30 Snatches for time (135/95 lbs)",
+            "scaling": "\n\n".join(scaling_content) if scaling_content else "Scaling: Reduce weight to maintain speed.",
+            "score_type": "AMRAP" if any("AMRAP" in l.upper() for l in wod_content) else "For Time"
         }
 
     except Exception as e:
         return {"title": "Manual Entry Mode", "workout": f"Technical Issue: {e}", "scaling": "", "score_type": "Other"}
 
-# --- Data Handshake ---
+# --- Data Persistence ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_entry(data):
@@ -105,7 +101,7 @@ def save_entry(data):
     except:
         return False
 
-# --- App Structure ---
+# --- UI Setup ---
 st.title("TRI⚡DRIVE")
 st.caption("43M | 150-160 lbs | Sciatica-Resilient Hub")
 
@@ -145,5 +141,5 @@ with tab3:
             st.line_chart(history.set_index('Date')[['Sciatica_Score', 'Weight']])
             st.dataframe(history.tail(5), use_container_width=True)
     except:
-        st.info("Awaiting initial data entry.")
-            
+        st.info("Log a workout to see trends.")
+        
