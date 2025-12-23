@@ -24,37 +24,30 @@ if 'wod_data' not in st.session_state:
 # --- Scraper Function ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/workout/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/04.1"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/04.1"}
     try:
         response = requests.get(url, headers=headers, timeout=10)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extract WOD details
-        title = soup.find('h3', class_='content-title')
-        title_text = title.text.strip() if title else "Today's WOD"
-        
-        content = soup.find('div', class_='content')
-        workout_text = content.text.strip() if content else "No workout details found. Please enter manually."
-        
-        scaling_sections = soup.find_all('div', class_='scaling')
-        scaling_text = "\n".join([s.text.strip() for s in scaling_sections]) if scaling_sections else "Scaling: Adjust for YMCA equipment and back safety."
-        
-        # Smart Scoring Detection
-        score_type = "For Time"
-        if "AMRAP" in workout_text.upper() or "REPS" in workout_text.upper():
-            score_type = "AMRAP"
-            
+        # Targets only the main workout text, avoiding the header menus
+        workout_div = soup.find('div', class_='content')
+        if workout_div:
+            # Removes common navigation text often pulled in
+            for nav in workout_div.find_all(['nav', 'header', 'footer']):
+                nav.decompose()
+            workout_text = workout_div.get_text(separator="\n").strip()
+        else:
+            workout_text = "Workout details not found. Enter manually below."
+
         return {
-            "title": title_text,
+            "title": "Today's WOD",
             "workout": workout_text,
-            "scaling": scaling_text,
-            "score_type": score_type
+            "scaling": "Scaling: Adjust for back safety.",
+            "score_type": "AMRAP" if "AMRAP" in workout_text.upper() else "For Time"
         }
     except Exception as e:
-        return {"title": "Error", "workout": f"Scraping failed: {e}", "scaling": "", "score_type": "Other"}
-
+        return {"title": "Scraper Error", "workout": str(e), "scaling": "", "score_type": "Other"}
+        
 # --- Data Handshake ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
