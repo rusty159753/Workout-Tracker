@@ -15,165 +15,141 @@ st.markdown("""
     .main { background-color: #0e1117; color: #fafafa; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
     .stTextInput>div>div>input { background-color: #262730; color: white; }
-    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; }
+    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- Session State Initialization ---
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Advanced Targeted Scraper ---
+# --- Precise Post Scraper ---
 def scrape_crossfit_wod():
-    url = "https://www.crossfit.com/workout/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/04.1"
-    }
+    # Targeted WOD-specific URL
+    url = "https://www.crossfit.com/wod"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # 1. Targeted Hunt: CrossFit hides the WOD in an 'article' or a 'content' div
-        article = soup.find('article') or soup.find('div', class_='content')
-        
-        if not article:
-            return {"title": "Error", "workout": "Workout container not found.", "scaling": "", "score_type": "Other"}
+        # Eliminate global navigation to prevent menu-item scraping
+        for junk in soup.find_all(['nav', 'header', 'footer', 'noscript']):
+            junk.decompose()
 
-        # 2. Extract Title (e.g., 'Isabel')
-        # We look for the first header that isn't a site-wide nav link
-        title_text = "Today's WOD"
-        possible_titles = article.find_all(['h1', 'h2', 'h3'])
-        for t in possible_titles:
-            text = t.get_text().strip()
-            # If it's short and doesn't look like a date or nav, it's the title
-            if text and len(text) < 30 and not any(x in text.lower() for x in ['crossfit', 'gym', 'courses']):
-                title_text = text
-                break
+        # 1. FIND THE DATE (The Absolute Anchor)
+        # CrossFit uses a specific h3 or h4 for the YYMMDD code
+        today_code = datetime.date.today().strftime("%y%m%d")
         
-        # 3. Targeted Body Extraction
-        # We specifically extract paragraphs and lists to avoid the <div> soup
-        content_elements = article.find_all(['p', 'ul', 'li', 'h4'])
+        # 2. EXTRACT THE POST CONTENT
+        # The WOD post is almost always contained within an <article> or a specific div
+        article = soup.find('article')
+        if not article:
+            return {"title": "Error", "workout": "Daily post container not found.", "scaling": "", "score_type": "Other"}
+
+        # Get all textual elements in order
+        elements = article.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'ul', 'li'])
         
-        # JUNK FILTER: Phrases that CrossFit uses for marketing, not the workout
-        junk = ["find a gym", "open a crossfit", "getting started", "what is crossfit", 
-                "cure", "level 1", "subscribe", "courses", "view more", "military"]
-        
-        cleaned_body = []
-        scaling_section = []
-        is_scaling = False
-        
-        for elem in content_elements:
-            text = elem.get_text().strip()
-            if not text or any(j in text.lower() for j in junk):
+        wod_content = []
+        scaling_content = []
+        capture_state = "寻找DATE" # Seeking Date
+        title = "Today's WOD"
+
+        for elem in elements:
+            text = elem.get_text(strip=True)
+            if not text: continue
+
+            # A. Detect Date Code (Start of Post)
+            if today_code in text:
+                capture_state = "WOD"
                 continue
             
-            # Switch to scaling section if keyword found
-            if "scaling" in text.lower() or "beginner" in text.lower() or "intermediate" in text.lower():
-                is_scaling = True
-            
-            if is_scaling:
-                scaling_section.append(text)
-            else:
-                cleaned_body.append(text)
+            # B. Identify Title (First line after Date/Workout of the Day)
+            if capture_state == "WOD" and title == "Today's WOD" and "Workout of the Day" not in text:
+                title = text
+                continue
 
-        workout_text = "\n\n".join(cleaned_body)
-        scaling_text = "\n\n".join(scaling_section) if scaling_section else "Scaling: Adjust for back safety and YMCA equipment."
-        
-        # 4. Smart Score Detection
-        score_type = "AMRAP" if any(x in workout_text.upper() for x in ["AMRAP", "REPS", "ROUNDS"]) else "For Time"
+            # C. Detect Scaling Header
+            if "Scaling" in text:
+                capture_state = "SCALING"
+                continue
             
+            # D. Detect End of Post (Comments/Results)
+            if any(stop in text for stop in ["Post time", "View results"]):
+                capture_state = "END"
+                break
+
+            # E. Distribute Content
+            if capture_state == "WOD":
+                # If we hit Stimulus, we can choose to keep it or label it
+                if "Stimulus" in text or "Strategy" in text:
+                    wod_content.append(f"\n**{text}**")
+                else:
+                    wod_content.append(text)
+            elif capture_state == "SCALING":
+                scaling_content.append(text)
+
         return {
-            "title": title_text,
-            "workout": workout_text,
-            "scaling": scaling_text,
-            "score_type": score_type
+            "title": title if len(title) < 25 else "Benchmark",
+            "workout": "\n\n".join(wod_content),
+            "scaling": "\n\n".join(scaling_content) if scaling_content else "Scale for Isabel stimulus (under 15 min).",
+            "score_type": "AMRAP" if "AMRAP" in str(wod_content).upper() else "For Time"
         }
-    except Exception as e:
-        return {"title": "Scraper Error", "workout": f"Failed: {e}", "scaling": "", "score_type": "Other"}
 
-# --- Data Handshake ---
+    except Exception as e:
+        return {"title": "Scraper Offline", "workout": f"Technical Issue: {e}", "scaling": "", "score_type": "Other"}
+
+# --- Data Ledger Management ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_entry(data):
     try:
-        existing_data = conn.read(ttl=0)
+        existing = conn.read(ttl=0)
         new_row = pd.DataFrame([data])
-        if existing_data.empty:
-            updated_df = new_row
-        else:
-            updated_df = pd.concat([existing_data, new_row], ignore_index=True)
-        conn.update(data=updated_df)
+        updated = pd.concat([existing, new_row], ignore_index=True) if not existing.empty else new_row
+        conn.update(data=updated)
         return True
-    except Exception as e:
-        st.error(f"Save failed: {e}")
+    except:
         return False
 
-# --- UI Header ---
+# --- App Structure ---
 st.title("TRI⚡DRIVE")
-st.caption("43M | 150-160 lbs | Sciatica-Resilient Performance Hub")
+st.caption("43M | 150-160 lbs | Sciatica-Resilient Hub")
 
-# --- App Logic ---
 if st.session_state.wod_data is None:
-    with st.spinner("Scraping Daily WOD..."):
-        st.session_state.wod_data = scrape_crossfit_wod()
+    st.session_state.wod_data = scrape_crossfit_wod()
 
 wod = st.session_state.wod_data
-
 tab1, tab2, tab3 = st.tabs(["🔥 The Daily Drive", "📊 Metrics", "📈 Apex Analytics"])
 
 with tab1:
     st.subheader(wod['title'])
     st.info(wod['workout'])
-    
     st.write("### YMCA Scaling & Adaptations")
-    scaled_workout = st.text_area(
-        "Modify movements for back safety:",
-        value=wod['scaling'],
-        height=300
-    )
+    # This text area is populated with the SCALING section we scraped
+    st.text_area("YMCA Safety Notes:", value=wod['scaling'], height=300)
 
 with tab2:
     st.subheader("Performance Log")
     col1, col2 = st.columns(2)
-    
     with col1:
-        sciatica_score = st.slider("Sciatica/Back Sensitivity (1-10)", 1, 10, 2)
-        weight = st.slider("Body Weight (lbs)", 145, 170, 155)
-    
+        sciatica = st.slider("Sciatica Sensitivity", 1, 10, 2)
+        weight = st.slider("Body Weight", 145, 170, 158)
     with col2:
-        if wod['score_type'] == "AMRAP":
-            result = st.text_input("Score (Total Reps/Rounds)", placeholder="e.g. 8 Rounds + 12")
-        else:
-            result = st.text_input("Score (Time)", placeholder="e.g. 14:22")
-        notes = st.text_area("Internal Dialogue / Back Status", placeholder="Felt stiffness in L5-S1 during cleans...")
-
+        res = st.text_input("Score", placeholder="e.g. 12:45")
+        notes = st.text_area("Gym Notes", placeholder="Back felt...")
+    
     if st.button("Save to TriDrive Ledger"):
-        entry = {
-            "Date": datetime.date.today().strftime("%Y-%m-%d"),
-            "WOD_Name": wod['title'],
-            "Result": result,
-            "Weight": weight,
-            "Sciatica_Score": sciatica_score,
-            "Notes": notes
-        }
+        entry = {"Date": datetime.date.today().strftime("%Y-%m-%d"), "WOD_Name": wod['title'], "Result": res, "Weight": weight, "Sciatica_Score": sciatica, "Notes": notes}
         if save_entry(entry):
-            st.success("Entry locked into Handshake!")
+            st.success("WOD Logged!")
             st.balloons()
 
 with tab3:
-    st.subheader("Visualizing Resilience")
     try:
         history = conn.read(ttl=0)
         if not history.empty:
             history['Date'] = pd.to_datetime(history['Date'])
-            history = history.sort_values('Date')
-            st.write("### Sciatica vs. Weight Trends")
-            chart_data = history.set_index('Date')[['Sciatica_Score', 'Weight']]
-            st.line_chart(chart_data)
-            st.write("### Recent Logs")
+            st.line_chart(history.set_index('Date')[['Sciatica_Score', 'Weight']])
             st.dataframe(history.tail(5), use_container_width=True)
-        else:
-            st.warning("No data found in Google Sheets. Start logging to see analytics!")
-    except Exception as e:
-        st.info("Awaiting initial data connection for visualization.")
-        
+    except:
+        st.info("Awaiting initial data entry.")
