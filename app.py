@@ -104,3 +104,50 @@ with tab2:
     col1, col2 = st.columns(2)
     
     with col1:
+        # High-visibility sliders for gym floor use
+        sciatica_score = st.slider("Sciatica/Back Sensitivity (1-10)", 1, 10, 2)
+        weight = st.slider("Body Weight (lbs)", 145, 170, 155)
+    
+    with col2:
+        # Dynamic input based on WOD type
+        if wod['score_type'] == "AMRAP":
+            result = st.text_input("Score (Total Reps/Rounds)", placeholder="e.g. 8 Rounds + 12")
+        else:
+            result = st.text_input("Score (Time)", placeholder="e.g. 14:22")
+            
+        notes = st.text_area("Internal Dialogue / Back Status", placeholder="Felt stiffness in L5-S1 during cleans...")
+
+    if st.button("Save to TriDrive Ledger"):
+        entry = {
+            "Date": datetime.date.today().strftime("%Y-%m-%d"),
+            "WOD_Name": wod['title'],
+            "Result": result,
+            "Weight": weight,
+            "Sciatica_Score": sciatica_score,
+            "Notes": notes
+        }
+        if save_entry(entry):
+            st.success("Entry locked into Handshake!")
+            st.balloons()
+
+with tab3:
+    st.subheader("Visualizing Resilience")
+    try:
+        # Direct pull from the Google Sheet
+        history = conn.read(ttl=0)
+        if not history.empty:
+            # Sort data by date for proper charting
+            history['Date'] = pd.to_datetime(history['Date'])
+            history = history.sort_values('Date')
+            
+            st.write("### Sciatica vs. Weight Trends")
+            # Charts help identify if body weight increases trigger back pain
+            chart_data = history.set_index('Date')[['Sciatica_Score', 'Weight']]
+            st.line_chart(chart_data)
+            
+            st.write("### Recent Logs")
+            st.dataframe(history.tail(5), use_container_width=True)
+        else:
+            st.warning("No data found in Google Sheets. Start logging to see analytics!")
+    except Exception as e:
+        st.info("Awaiting initial data connection for visualization.")
