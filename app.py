@@ -7,7 +7,7 @@ import unicodedata
 import hashlib
 from bs4 import BeautifulSoup
 
-# --- 1. CONFIG MUST BE FIRST (CRITICAL FIX) ---
+# --- 1. CONFIG MUST BE FIRST ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 
 # --- 2. ENVIRONMENT CHECK ---
@@ -34,7 +34,7 @@ def sanitize_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# --- 5. THE MAPPER ---
+# --- 5. THE MAPPER (Fixed Indentation) ---
 def parse_workout_data(wod_data):
     # Handle both Dictionary (JSON) and String (HTML) inputs
     if isinstance(wod_data, str):
@@ -72,9 +72,78 @@ def parse_workout_data(wod_data):
     else:
         parsed['workout'] = workout_text
 
+    # LOGIC BLOCK: Expanded for safety
     for i, item in enumerate(indices):
         key, start = item['key'], item['end']
         end = indices[i+1]['start'] if (i + 1 < len(indices)) else len(full_blob)
         content = full_blob[start:end].strip()
-        if key == "Stimulus": parsed['strategy'] = content
+        
+        if key == "Stimulus":
+            parsed['strategy'] = content
         elif key == "Scaling":
+            parsed['scaling'] = content
+        elif key == "Intermediate":
+            parsed['intermediate'] = content
+        elif key == "Beginner":
+            parsed['beginner'] = content
+        elif key == "Cues":
+            parsed['cues'] = content
+
+    parsed['title'] = title
+    parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
+    return parsed
+
+# --- 6. ENGINES ---
+def fetch_wod_content():
+    local_tz = pytz.timezone("US/Mountain")
+    today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
+    
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+
+    try:
+        url = f"https://www.crossfit.com/{today_id}"
+        response = scraper.get(url, timeout=20)
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # ATTEMPT 1: JSON
+            next_data = soup.find('script', id='__NEXT_DATA__')
+            if next_data:
+                try:
+                    json_payload = json.loads(next_data.string)
+                    wod_data = json_payload.get('props', {}).get('pageProps', {}).get('wod', {})
+                    if wod_data:
+                        parsed = parse_workout_data(wod_data)
+                        parsed['id'] = today_id
+                        return parsed
+                except:
+                    pass
+
+            # ATTEMPT 2: HTML FALLBACK
+            article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
+            if article:
+                raw_text = article.get_text(separator=" ", strip=True)
+                parsed = parse_workout_data(raw_text)
+                parsed['id'] = today_id
+                parsed['title'] = f"WOD {today_id}"
+                return parsed
+
+            page_title = soup.title.string.strip() if soup.title else "No Title"
+            return {"error": f"Parsers failed. Page Title: '{page_title}'"}
+
+        return {"error": f"Connection Failed: Status {response.status_code}"}
+        
+    except Exception as e:
+        return {"error": f"Crash: {str(e)}"}
+
+# --- 7. UI LAYER ---
+st.title("TRI⚡DRIVE")
+
+if not READY_TO_SYNC:
+    st.error("Missing Dependencies: cloudscraper, gspread")
+else:
+    # --- VIEW MODE ---
+    if st.session_state['view_mode'] == 'VIEWER':
+        
+        cached_data = st
