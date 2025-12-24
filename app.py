@@ -1,3 +1,4 @@
+# --- VERSION 6.4: SCORCHED EARTH (NO F-STRINGS) ---
 import streamlit as st
 import datetime
 import pytz
@@ -162,7 +163,7 @@ def fetch_wod_content():
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 
     try:
-        url = f"https://www.crossfit.com/{today_id}"
+        url = "https://www.crossfit.com/" + today_id
         response = scraper.get(url, timeout=15)
         
         if response.status_code == 200:
@@ -187,13 +188,13 @@ def fetch_wod_content():
             if article:
                 parsed = parse_workout_data(str(article))
                 parsed['id'] = today_id
-                parsed['title'] = f"WOD {today_id}"
+                parsed['title'] = "WOD " + today_id
                 return parsed
 
             return {"error": "Parser Mismatch."}
-        return {"error": f"HTTP Error {response.status_code}"}
+        return {"error": "HTTP Error " + str(response.status_code)}
     except Exception as e:
-        return {"error": f"Critical Failure: {str(e)}"}
+        return {"error": "Critical Failure: " + str(e)}
 
 # --- 9. UI LAYER ---
 st.title("TRI⚡DRIVE")
@@ -214,7 +215,7 @@ else:
                 st.session_state['current_wod'] = wod
                 st.rerun() 
             else:
-                st.error(f"⚠️ {wod['error']}")
+                st.error("⚠️ " + str(wod.get('error', 'Unknown Error')))
                 if st.button("🔄 Retry Handshake"):
                     st.session_state['current_wod'] = {}
                     st.rerun()
@@ -265,17 +266,20 @@ else:
                 st.session_state['view_mode'] = 'VIEWER'
                 st.rerun()
         else:
-            st.success(f"Loaded: {wod.get('title', 'Unknown')}")
+            st.success("Loaded: " + wod.get('title', 'Unknown'))
             
-            formatted_rx = wod.get('workout', 'No Data').replace("\n", "  \n")
+            # --- SAFE DISPLAY VARIABLE ---
+            safe_rx_display = wod.get('workout', 'No Data').replace("\n", "  \n")
             
-            # --- FIX APPLIED HERE: Concatenation instead of f-string ---
-            st.markdown("**Target Workout:** \n" + formatted_rx)
+            # --- STRICT CONCATENATION ---
+            st.markdown("**Target Workout:** \n" + safe_rx_display)
             
             st.warning("⚠️ Phase 3 Pending Authorization")
             
             if st.button("⬅️ Abort & Return"):
                 st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
+          st.session_state['view_mode'] = 'VIEWER'
                 st.rerun()
             if st.button("⬅️ Abort & Return"):
                 st.session_state['view_mode'] = 'VIEWER'
