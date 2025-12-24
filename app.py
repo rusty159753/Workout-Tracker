@@ -9,9 +9,11 @@ import unicodedata
 
 # --- STEP 1: THE JANITOR (Sanitization) ---
 def sanitize_text(text):
+    """
+    Scrub the text to remove 'Ghost Spaces' and encoding artifacts.
+    """
     if not text:
         return ""
-    # Fix encoding artifacts and ghost spaces
     text = unicodedata.normalize("NFKD", text)
     text = text.replace('\xa0', ' ')
     text = re.sub(r'\s+', ' ', text).strip()
@@ -19,12 +21,15 @@ def sanitize_text(text):
 
 # --- STEP 2: THE MAPPER (Positional Parsing) ---
 def parse_workout_data(wod_data):
+    """
+    Maps the workout text by position, ensuring robust extraction
+    even if sections move around.
+    """
     raw_main = wod_data.get('main_text', '')
     raw_stim = wod_data.get('stimulus', '')
-    
-    # Sanitize immediately
     full_blob = sanitize_text(raw_main + " " + raw_stim)
 
+    # Regex Headers
     headers = {
         "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
         "Scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
@@ -48,10 +53,11 @@ def parse_workout_data(wod_data):
         "cues": None, "resources": None
     }
 
-    # Extract Workout
+    # Extract Workout Section
     workout_end = indices[0]['start'] if indices else len(full_blob)
     workout_text = full_blob[:workout_end].strip()
     
+    # Remove "Post to comments" junk
     post_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+score\s+to\s+comments|Post\s+to\s+comments)", workout_text, re.IGNORECASE)
     if post_match:
         junk_tail = workout_text[post_match.end():]
@@ -62,7 +68,7 @@ def parse_workout_data(wod_data):
     else:
         parsed['workout'] = workout_text
 
-    # Extract Sections
+    # Extract Other Sections
     for i, item in enumerate(indices):
         key = item['key']
         start = item['end']
@@ -79,47 +85,48 @@ def parse_workout_data(wod_data):
     parsed['title'] = wod_data.get('title', 'Workout of the Day')
     return parsed
 
-# --- STEP 3: DISCOVERY & EXTRACTION (Googlebot Restored) ---
-def execute_full_sync():
+# --- STEP 3: THE HUMAN SESSION ENGINE ---
+def execute_human_session():
     local_tz = pytz.timezone("US/Mountain")
     today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
     
-    # *** CRITICAL FIX: REVERT TO GOOGLEBOT TO BYPASS 'SOFT BLOCK' ***
+    # 1. INITIALIZE SESSION (The "Browser Tab")
+    # This object persists cookies across requests
+    session = requests.Session()
+    
+    # 2. SET HUMAN HEADERS (The "Fingerprint")
     headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.google.com/",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive"
     }
+    session.headers.update(headers)
 
     try:
-        # A. Try Direct ID First
-        target_url = f"https://www.crossfit.com/{today_id}"
-        response = requests.get(target_url, headers=headers, timeout=15)
-        response.encoding = 'utf-8'
+        # 3. THE HANDSHAKE (Visit Homepage First)
+        # This gets the cookies/tokens from Cloudflare
+        home_res = session.get("https://www.crossfit.com", timeout=10)
+        
+        # Discovery: Find the latest ID from the homepage
+        match = re.search(r'(\d{6})', home_res.text)
+        if match:
+            target_id = match.group(1)
+        else:
+            target_id = today_id
+            
+        # 4. THE REQUEST (With Cookies)
+        target_url = f"https://www.crossfit.com/{target_id}"
+        response = session.get(target_url, timeout=15)
+        response.encoding = 'utf-8' # Force Encoding
 
-        valid_data_found = False
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            next_data = soup.find('script', id='__NEXT_DATA__')
-            if next_data:
-                data = json.loads(next_data.string)
-                if data.get('props', {}).get('pageProps', {}).get('wod'):
-                    valid_data_found = True
-
-        if not valid_data_found:
-            # B. Homepage Fallback
-            home_res = requests.get("https://www.crossfit.com", headers=headers, timeout=10)
-            home_res.encoding = 'utf-8'
-            match = re.search(r'(\d{6})', home_res.text)
-            if match:
-                today_id = match.group(1)
-                target_url = f"https://www.crossfit.com/{today_id}"
-                response = requests.get(target_url, headers=headers, timeout=15)
-                response.encoding = 'utf-8'
-
-        # C. Process Valid Response
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             next_data = soup.find('script', id='__NEXT_DATA__')
             
+            # 5. DATA EXTRACTION
             if next_data:
                 data = json.loads(next_data.string)
                 wod_data = data.get('props', {}).get('pageProps', {}).get('wod', {})
@@ -127,40 +134,50 @@ def execute_full_sync():
                 if wod_data:
                     parsed_content = parse_workout_data(wod_data)
                     parsed_content['url'] = target_url
-                    parsed_content['id'] = today_id
+                    parsed_content['id'] = target_id
                     return parsed_content
 
-            # HTML Fallback
+            # Fallback for HTML-only pages (still using session)
             article = soup.find('article') or soup.find('main')
             if article:
                 raw = sanitize_text(article.get_text(separator="\n", strip=True))
-                return {"workout": raw, "title": f"WOD {today_id}", "url": target_url, "id": today_id}
+                return {"workout": raw, "title": f"WOD {target_id}", "url": target_url, "id": target_id}
 
-        return {"error": f"Site unreachable (Status {response.status_code}) - Likely blocked."}
+            # DEBUG: If 200 OK but no data, capture the page title
+            try:
+                page_title = soup.title.string.strip()
+            except:
+                page_title = "Unknown"
+            
+            return {"error": f"Soft Block / Challenge Page Detected. Title: '{page_title}'"}
+
+        return {"error": f"Site unreachable (Status {response.status_code})"}
         
     except Exception as e:
-        return {"error": f"Logic Failure: {str(e)}"}
+        return {"error": f"Connection Failure: {str(e)}"}
 
 # --- UI LAYER ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡", layout="centered")
 st.title("TRI⚡DRIVE")
 
-with st.spinner("Connecting via Secure Protocol..."):
-    wod = execute_full_sync()
+with st.spinner("Syncing..."):
+    wod = execute_human_session()
 
 if wod and "workout" in wod:
     st.subheader(wod['title'])
     
-    clean_workout = wod['workout'].replace('♂', '(M)').replace('♀', '(F)')
-    st.info(clean_workout)
+    # Display Workout (Always Visible)
+    st.info(wod['workout'].replace('♂', '(M)').replace('♀', '(F)'))
     
     if wod.get('history'):
         st.caption(f"📅 Compare to: {wod['history']}")
 
+    # Strategy (Hidden)
     if wod.get('strategy'):
         with st.expander("Stimulus & Strategy", expanded=False):
             st.write(wod['strategy'].replace('♂', '(M)').replace('♀', '(F)'))
 
+    # Scaling (Hidden + Tabs)
     has_scaling = any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')])
     if has_scaling:
         with st.expander("Scaling & Modifications", expanded=False):
@@ -175,6 +192,7 @@ if wod and "workout" in wod:
                     if name == "Rx Scaling": key = "scaling"
                     cols[idx].write(wod[key].replace('♂', '(M)').replace('♀', '(F)'))
 
+    # Cues (Hidden)
     if wod.get('cues'):
         with st.expander("Coaching Cues", expanded=False):
             st.write(wod['cues'])
@@ -182,5 +200,6 @@ if wod and "workout" in wod:
     st.divider()
     st.sidebar.success(f"Synced: /{wod.get('id')}")
     st.sidebar.markdown(f"[Source]({wod.get('url')})")
+
 else:
     st.error(f"Error: {wod.get('error')}")
