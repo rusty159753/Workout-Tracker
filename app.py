@@ -1,65 +1,61 @@
 import streamlit as st
 import requests
-from bs4 import BeautifulSoup
+import json
 import datetime
 import hashlib
 import re
 
-def execute_final_raw_sync():
-    rss_url = "https://www.crossfit.com/feed"
-    # RESET HEADERS: Use a basic bot header to prevent the Homepage Redirect
-    headers = {"User-Agent": "WOD-Scraper/1.0"}
+def execute_react_state_scrape():
+    # We target the main page because the telemetry shows it contains the full state
+    target_url = "https://www.crossfit.com"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    today = datetime.date.today()
-    target_dates = [today.strftime("%y%m%d"), (today - datetime.timedelta(days=1)).strftime("%y%m%d")]
+    today_id = datetime.date.today().strftime("%y%m%d")
     
     try:
-        response = requests.get(rss_url, headers=headers, timeout=20)
-        # Verify if we actually got XML or still got HTML
-        is_html = response.text.strip().startswith("<!DOCTYPE html")
+        response = requests.get(target_url, headers=headers, timeout=20)
+        raw_html = response.text
         
-        for date_id in target_dates:
-            # BROAD PATTERN MATCH: Find the date and the very next URL
-            # This works whether it's an RSS <link> or an HTML <a> tag
-            pattern = rf"{date_id}.*?(https?://www\.crossfit\.com/[^\s\"<>]+)"
-            match = re.search(pattern, response.text, re.DOTALL | re.IGNORECASE)
+        # 1. EXTRACT THE PRELOADED STATE
+        # We look for the JSON object in the script tag the telemetry revealed
+        state_match = re.search(r'window\.__PRELOADED_STATE__\s*=\s*({.*?});', raw_html, re.DOTALL)
+        
+        if state_match:
+            state_json = state_match.group(1)
+            data = json.loads(state_json)
             
-            if match:
-                target_link = match.group(1).strip()
-                # Clean up trailing characters
-                target_link = target_link.split('<')[0].split('"')[0].split(']')[0]
-                
-                if "http" in target_link:
-                    res = requests.get(target_link, headers=headers, timeout=15)
-                    page_soup = BeautifulSoup(res.content, 'html.parser')
-                    content = page_soup.find('article') or page_soup.find('div', class_=re.compile(r'content|post|entry', re.I))
+            # 2. SEARCH THE STATE FOR THE WORKOUT
+            # CrossFit's React state usually stores workouts in an 'items' or 'wod' key
+            # We will search the entire JSON string for our date and its associated text
+            if today_id in state_json:
+                # We extract the specific workout text related to today's ID
+                # This regex finds the date and pulls the subsequent text until the next entry
+                content_match = re.search(rf'"{today_id}".*?"content":"(.*?)"', state_json)
+                if content_match:
+                    workout_text = content_match.group(1).encode().decode('unicode_escape')
+                    # Clean up HTML artifacts from the JSON string
+                    workout_text = re.sub(r'<[^>]+>', '\n', workout_text)
                     
-                    if content:
-                        full_text = content.get_text(separator="\n", strip=True)
-                        return {
-                            "title": date_id,
-                            "workout": full_text,
-                            "url": target_link,
-                            "hash": hashlib.sha256(full_text.encode('utf-8')).hexdigest(),
-                            "type": "HTML" if is_html else "XML"
-                        }
+                    return {
+                        "title": today_id,
+                        "workout": workout_text,
+                        "hash": hashlib.sha256(workout_text.encode()).hexdigest()
+                    }
         
-        return {"debug": response.text[:1000]} # Send more text for debugging
+        return {"debug": raw_html[:1000]}
     except Exception as e:
         return {"error": str(e)}
 
 # --- UI ---
 st.title("TRI⚡DRIVE")
-wod = execute_final_raw_sync()
+wod = execute_react_state_scrape()
 
 if isinstance(wod, dict) and "workout" in wod:
     st.subheader(f"WOD: {wod['title']}")
     st.code(wod['workout'], language=None)
-    st.sidebar.success(f"Source Type: {wod['type']}")
-    st.sidebar.markdown(f"[Source URL]({wod['url']})")
+    st.sidebar.success("Found: React State Data")
 else:
-    st.error("Target data not found in the current stream.")
-    if "debug" in wod:
-        with st.expander("Diagnostic Telemetry"):
-            st.text(wod["debug"])
-        
+    st.error("2025 Data locked in JavaScript State. Refining extraction...")
+    with st.expander("Diagnostic Telemetry"):
+        st.text(wod.get("debug", "No data"))
+                    
