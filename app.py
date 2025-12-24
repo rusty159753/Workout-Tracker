@@ -11,22 +11,24 @@ st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #fafafa; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
-    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
+    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.5; }
     .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 8px; font-weight: bold; padding: 10px; }
-    .stInfo p { margin-bottom: 15px; }
+    /* Preserves line breaks exactly as scraped */
+    .preserve-breaks { white-space: pre-wrap; font-family: inherit; }
     </style>
     """, unsafe_allow_html=True)
 
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- Advanced Structural Scraper ---
+# --- High-Fidelity Line-Preserving Scraper ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/wod"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
+        response.encoding = 'utf-8' # Force encoding for special characters
         soup = BeautifulSoup(response.content, 'html.parser')
         today_code = datetime.date.today().strftime("%y%m%d")
         
@@ -34,49 +36,46 @@ def scrape_crossfit_wod():
         if not article:
             return {"title": "Rest Day", "workout": "No workout found.", "stimulus": "", "scaling": "", "cues": ""}
 
-        # Extracting with single newline to preserve original list flow
+        # Capture with natural newline separator
         raw_text = article.get_text(separator="\n", strip=True)
         lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
 
-        def get_section_robust(start_trigger, stop_triggers):
+        def get_section_literal(start_trigger, stop_triggers):
             section_lines = []
             found_start = False
             for line in lines:
                 if not found_start:
-                    # Target date or exact header match
                     if (start_trigger.lower() in line.lower() and len(line) < 30) or (start_trigger == today_code and today_code in line):
                         found_start = True
                         continue
                 else:
-                    # Stop if we hit a future header
                     if any(stop.lower() in line.lower() and len(line) < 30 for stop in stop_triggers):
                         break
-                    
-                    # Formatting weights for visibility
-                    if any(char in line for char in ['♀', '♂', 'lb', 'kg']):
+                    # Identify male/female lines to apply bolding and prevent splitting
+                    if any(char in line for char in ['♀', '♂']):
                         section_lines.append(f"**{line}**")
                     else:
                         section_lines.append(line)
-            return "\n\n".join(section_lines)
+            return "\n".join(section_lines)
 
-        # 1. Title Capture
+        # 1. Precise Title Extract
         title = "Today's WOD"
         for i, line in enumerate(lines):
             if today_code in line and i+1 < len(lines):
                 title = lines[i+1]
                 break
 
-        # 2. Sequential Extraction
-        workout = get_section_robust(today_code, ["Stimulus", "Scaling", "Coaching cues", "Post time"])
-        workout = workout.replace(title, "").strip() # Clean redundancy
+        # 2. Sequential literal extraction
+        workout = get_section_literal(today_code, ["Stimulus", "Scaling", "Coaching cues", "Post time"])
+        workout = workout.replace(title, "").strip()
 
-        stimulus = get_section_robust("Stimulus", ["Scaling", "Coaching cues", "Post time"])
-        scaling = get_section_robust("Scaling", ["Coaching cues", "Post time"])
-        cues = get_section_robust("Coaching cues", ["Post time", "View results"])
+        stimulus = get_section_literal("Stimulus", ["Scaling", "Coaching cues", "Post time"])
+        scaling = get_section_literal("Scaling", ["Coaching cues", "Post time"])
+        cues = get_section_literal("Coaching cues", ["Post time", "View results"])
 
         return {
             "title": title,
-            "workout": workout if workout else "Isabel: 30 Snatches for time (135/95 lbs)",
+            "workout": workout,
             "stimulus": stimulus,
             "scaling": scaling,
             "cues": cues
@@ -85,7 +84,7 @@ def scrape_crossfit_wod():
     except Exception as e:
         return {"title": "Manual Entry Mode", "workout": f"Technical Issue: {e}", "stimulus": "", "scaling": "", "cues": ""}
 
-# --- Data Persistence ---
+# --- Ledger Persistence ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_entry(data):
@@ -109,20 +108,22 @@ tab1, tab2, tab3 = st.tabs(["🔥 The Daily Drive", "📊 Metrics", "📈 Apex A
 
 with tab1:
     st.subheader(wod['title'])
-    st.info(wod['workout'])
+    # Using markdown with white-space preservation for WOD
+    st.markdown(f'<div class="stInfo preserve-breaks">{wod["workout"]}</div>', unsafe_allow_html=True)
+    
     st.markdown("---")
     
     if wod['stimulus']:
         with st.expander("⚡ Stimulus & Strategy"):
-            st.markdown(wod['stimulus'])
+            st.markdown(f'<div class="preserve-breaks">{wod["stimulus"]}</div>', unsafe_allow_html=True)
 
     if wod['scaling']:
         with st.expander("⚖️ Scaling Options"):
-            st.markdown(wod['scaling'])
+            st.markdown(f'<div class="preserve-breaks">{wod["scaling"]}</div>', unsafe_allow_html=True)
 
     if wod['cues']:
         with st.expander("🧠 Coaching Cues"):
-            st.markdown(wod['cues'])
+            st.markdown(f'<div class="preserve-breaks">{wod["cues"]}</div>', unsafe_allow_html=True)
 
 with tab2:
     st.subheader("Performance Log")
