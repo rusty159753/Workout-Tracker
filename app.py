@@ -278,6 +278,13 @@ else:
             if st.button("⬅️ Abort & Return"):
                 st.session_state['view_mode'] = 'VIEWER'
                 st.rerun()
+formatted_rx}")
+            
+            st.warning("⚠️ Phase 3 Pending Authorization")
+            
+            if st.button("⬅️ Abort & Return"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
               with st.expander("Coaching Cues"):
                         st.markdown(wod['cues'].replace("\n", "  \n"))
 
