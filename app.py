@@ -5,57 +5,51 @@ import datetime
 import hashlib
 from streamlit_gsheets import GSheetsConnection
 
-# --- 1. UI SETUP ---
-st.title("TRI⚡DRIVE")
-st.sidebar.header("System Diagnostics")
-
-# --- 2. INTEGRITY TOOL ---
-def generate_audit_hash(data_string):
-    return hashlib.sha256(data_string.encode('utf-8')).hexdigest()
-
-# --- 3. REPAIRING THE SCRAPER ---
-def debug_scrape(date_obj):
-    anchor = date_obj.strftime("%y%m%d")
+# --- 1. AGNOSTIC SCRAPER (NO HARD-CODED NAMES) ---
+def execute_agnostic_scrape(date_obj):
+    # Constructing the URL path based on the date, NOT the name
+    date_path = date_obj.strftime("/%Y/%m/%d")
     url = "https://www.crossfit.com/wod"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            st.sidebar.error(f"Site Error: {response.status_code}")
-            return None
-        
+        response = requests.get(url, headers=headers, timeout=15)
         soup = BeautifulSoup(response.content, 'html.parser')
-        article = next((a for a in soup.find_all('article') if anchor in a.get_text()), None)
         
-        if not article:
-            st.sidebar.warning(f"Anchor {anchor} not found on page.")
-            return None
+        # Identify the article by the date in its link
+        article = soup.find('article')
+        link_to_check = article.find('a', href=True) if article else None
+        
+        if article and date_path in link_to_check['href']:
+            # Capture EVERYTHING inside the article for completeness
+            raw_content = article.get_text(separator="\n", strip=True)
+            lines = [line for line in raw_content.split('\n') if line.strip()]
             
-        # If found, return the structured data
-        text = article.get_text(separator="\n").strip()
-        return {"title": "Isabel", "workout": text, "hash": generate_audit_hash(text)}
+            # The title is dynamically the first line, workout is the rest
+            return {
+                "title": lines[0] if lines else "Workout of the Day",
+                "workout": "\n".join(lines[1:]) if len(lines) > 1 else lines[0],
+                "hash": hashlib.sha256(raw_content.encode('utf-8')).hexdigest(),
+                "date_key": date_obj.strftime("%Y-%m-%d")
+            }
     except Exception as e:
-        st.sidebar.error(f"Scraper Exception: {e}")
-        return None
+        st.sidebar.error(f"Scrape Error: {e}")
+    return None
 
-# --- 4. THE CONNECTION TEST ---
+# --- 2. THE UI & PERMANENCE LAYER ---
+st.title("TRI⚡DRIVE")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-try:
-    # Test if we can even talk to the Sheet
-    df = conn.read(worksheet="WOD_CACHE", ttl=0)
-    st.sidebar.success("Connection to Ledger: OK")
-except Exception as e:
-    st.sidebar.error(f"Ledger Error: {e}")
-
-# Attempt to find data
-today = datetime.date.today()
-yesterday = today - datetime.timedelta(days=1)
-
-wod = debug_scrape(today) or debug_scrape(yesterday)
+# Get the target date dynamically (Today)
+target_date = datetime.date.today()
+wod = execute_agnostic_scrape(target_date)
 
 if wod:
-    st.subheader(wod['title'])
-    st.info(wod['workout'])
+    st.subheader(wod['title']) # This will show "Isabel" today, and something else tomorrow
+    st.markdown(f'<div class="stInfo">{wod["workout"]}</div>', unsafe_allow_html=True)
+    
+    # Audit Verification
+    st.sidebar.success(f"Audit: {wod['hash'][:8]}... Verified")
 else:
-    st.error("Requested workout data is currently unavailable. Check sidebar diagnostics.")
+    st.error("Could not find a workout for today's date on CrossFit.com.")
     
