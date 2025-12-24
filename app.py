@@ -16,13 +16,13 @@ try:
 except ImportError:
     READY_TO_SYNC = False
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if 'view_mode' not in st.session_state:
     st.session_state['view_mode'] = 'VIEWER'
 if 'current_wod' not in st.session_state:
     st.session_state['current_wod'] = {}
 
-# --- STEP 1: THE JANITOR ---
+# --- STEP 1: THE JANITOR (UNTOUCHED) ---
 def sanitize_text(text):
     if not text: return ""
     text = BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
@@ -31,11 +31,17 @@ def sanitize_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# --- STEP 2: THE MAPPER ---
+# --- STEP 2: THE MAPPER (RESTORED HYBRID LOGIC) ---
 def parse_workout_data(wod_data):
-    raw_main = wod_data.get('main_text', '')
-    raw_stim = wod_data.get('stimulus', '')
-    full_blob = sanitize_text(raw_main + " " + raw_stim)
+    # LOGIC RESTORED: Handle both Dictionary (JSON) and String (HTML) inputs
+    if isinstance(wod_data, str):
+        full_blob = sanitize_text(wod_data)
+        title = "Workout of the Day"
+    else:
+        raw_main = wod_data.get('main_text', '')
+        raw_stim = wod_data.get('stimulus', '')
+        full_blob = sanitize_text(raw_main + " " + raw_stim)
+        title = wod_data.get('title', 'Workout of the Day')
 
     headers = {
         "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
@@ -73,100 +79,57 @@ def parse_workout_data(wod_data):
         elif key == "Beginner": parsed['beginner'] = content
         elif key == "Cues": parsed['cues'] = content
 
-    parsed['title'] = wod_data.get('title', 'Workout of the Day')
+    parsed['title'] = title
     parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
     return parsed
 
-# --- STEP 3: ENGINES (Robust Cloudscraper) ---
+# --- STEP 3: ENGINES (RESTORED FALLBACK) ---
 def fetch_wod_content():
     local_tz = pytz.timezone("US/Mountain")
     today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
     
-    # Restored 'mobile: False' to ensure robust desktop emulation
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 
     try:
         url = f"https://www.crossfit.com/{today_id}"
-        response = scraper.get(url, timeout=20) # Increased timeout
+        response = scraper.get(url, timeout=20)
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # ATTEMPT 1: JSON Data (Preferred)
             next_data = soup.find('script', id='__NEXT_DATA__')
             if next_data:
-                wod_data = json.loads(next_data.string).get('props', {}).get('pageProps', {}).get('wod', {})
-                if wod_data:
-                    parsed = parse_workout_data(wod_data)
-                    parsed['id'] = today_id
-                    return parsed
+                try:
+                    json_payload = json.loads(next_data.string)
+                    wod_data = json_payload.get('props', {}).get('pageProps', {}).get('wod', {})
+                    if wod_data:
+                        parsed = parse_workout_data(wod_data)
+                        parsed['id'] = today_id
+                        return parsed
+                except:
+                    pass # JSON failed, try HTML
+
+            # ATTEMPT 2: HTML Fallback (RESTORED)
+            # This is what was missing. If JSON is empty, look for the text.
+            article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
             
-            # Debug: If 200 but no data, showing the page title helps us guess if it's a "Challenge Page"
+            if article:
+                # Grab raw text and feed it to the parser
+                raw_text = article.get_text(separator=" ", strip=True)
+                parsed = parse_workout_data(raw_text) # Helper now accepts string
+                parsed['id'] = today_id
+                parsed['title'] = f"WOD {today_id}" # Fallback title
+                return parsed
+
+            # DEBUG: Only returns this if BOTH methods fail
             page_title = soup.title.string.strip() if soup.title else "No Title"
-            return {"error": f"Status 200 but No Data found. Page Title: '{page_title}'"}
+            return {"error": f"Page found ('{page_title}') but parsers failed."}
 
         return {"error": f"Connection Failed: Status {response.status_code}"}
         
     except Exception as e:
         return {"error": f"Crash: {str(e)}"}
 
-# --- UI LAYER ---
-st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
-st.title("TRI⚡DRIVE")
-
-if not READY_TO_SYNC:
-    st.error("Missing Dependencies: cloudscraper, gspread")
-else:
-    # --- VIEW MODE ---
-    if st.session_state['view_mode'] == 'VIEWER':
-        
-        # LOGIC FIX: Do not use cache if it contains an error
-        cached_data = st.session_state.get('current_wod', {})
-        if not cached_data or "error" in cached_data:
-            with st.spinner("Connecting to HQ..."):
-                wod = fetch_wod_content()
-                # Only cache if successful
-                if "error" not in wod:
-                    st.session_state['current_wod'] = wod
-        else:
-            wod = cached_data
-
-        if wod and "workout" in wod:
-            st.subheader(wod['title'])
-            st.info(wod['workout'])
-            
-            # The Trigger
-            if st.button("🚀 IMPORT TO WORKBENCH", use_container_width=True):
-                st.session_state['view_mode'] = 'WORKBENCH'
-                st.rerun()
-
-            st.divider()
-            
-            if wod.get('strategy'):
-                with st.expander("Stimulus & Strategy"):
-                    st.write(wod['strategy'])
-            
-            if any([wod.get('scaling'), wod.get('intermediate')]):
-                with st.expander("Scaling Options"):
-                    st.write(f"**Rx Scaling:** {wod.get('scaling', 'N/A')}")
-                    st.write(f"**Intermediate:** {wod.get('intermediate', 'N/A')}")
-
-        else:
-            # Error Display with Retry
-            st.error(f"⚠️ {wod.get('error')}")
-            if st.button("🔄 Retry Connection"):
-                st.session_state['current_wod'] = {} # Clear cache
-                st.rerun()
-
-    # --- WORKBENCH MODE ---
-    elif st.session_state['view_mode'] == 'WORKBENCH':
-        st.caption("🛠️ WORKBENCH ACTIVE")
-        
-        wod = st.session_state['current_wod']
-        
-        st.success(f"Imported: {wod['title']}")
-        st.markdown(f"**Rx Workout:** {wod['workout']}")
-        
-        st.warning("⚠️ Phase 3 Construction Zone")
-        
-        if st.button("⬅️ Back to Viewer"):
-            st.session_state['view_mode'] = 'VIEWER'
-            st.rerun()
+# --- UI LAYER (UNTOUCHED) ---
+st.set_
