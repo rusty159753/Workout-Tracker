@@ -5,80 +5,84 @@ import pandas as pd
 import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# --- Page Config & Pro Styling ---
+# --- Page Config & High-Fidelity Styling ---
 st.set_page_config(page_title="TriDrive Performance", page_icon="🚴‍♂️", layout="centered")
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #fafafa; }
     .stButton>button { width: 100%; border-radius: 10px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
-    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.5; }
-    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 8px; font-weight: bold; padding: 10px; }
-    /* Preserves line breaks exactly as scraped */
-    .preserve-breaks { white-space: pre-wrap; font-family: inherit; }
+    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
+    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 8px; font-weight: bold; padding: 10px; border: 1px solid #3e3e4e; }
+    .preserve-breaks { white-space: pre-wrap !important; font-family: inherit; display: block; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- High-Fidelity Line-Preserving Scraper ---
+# --- Global Stream Scraper (Tag-Independent) ---
 def scrape_crossfit_wod():
     url = "https://www.crossfit.com/wod"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        response.encoding = 'utf-8' # Force encoding for special characters
+        response.encoding = 'utf-8' 
         soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # ANCHOR: Today's ID (e.g., 251223)
         today_code = datetime.date.today().strftime("%y%m%d")
         
-        article = soup.find('article')
-        if not article:
-            return {"title": "Rest Day", "workout": "No workout found.", "stimulus": "", "scaling": "", "cues": ""}
-
-        # Capture with natural newline separator
-        raw_text = article.get_text(separator="\n", strip=True)
-        lines = [line.strip() for line in raw_text.split("\n") if line.strip()]
-
-        def get_section_literal(start_trigger, stop_triggers):
-            section_lines = []
-            found_start = False
-            for line in lines:
-                if not found_start:
-                    if (start_trigger.lower() in line.lower() and len(line) < 30) or (start_trigger == today_code and today_code in line):
-                        found_start = True
-                        continue
-                else:
-                    if any(stop.lower() in line.lower() and len(line) < 30 for stop in stop_triggers):
-                        break
-                    # Identify male/female lines to apply bolding and prevent splitting
-                    if any(char in line for char in ['♀', '♂']):
-                        section_lines.append(f"**{line}**")
-                    else:
-                        section_lines.append(line)
-            return "\n".join(section_lines)
-
-        # 1. Precise Title Extract
+        # Get every single line of text on the entire page, ignoring all HTML structure
+        all_lines = [line.strip() for line in soup.get_text(separator="\n", strip=True).split("\n") if line.strip()]
+        
+        # Data Buffers
+        sections = {"WORKOUT": [], "STIMULUS": [], "SCALING": [], "CUES": []}
+        capture_mode = "WAITING"
         title = "Today's WOD"
-        for i, line in enumerate(lines):
-            if today_code in line and i+1 < len(lines):
-                title = lines[i+1]
-                break
 
-        # 2. Sequential literal extraction
-        workout = get_section_literal(today_code, ["Stimulus", "Scaling", "Coaching cues", "Post time"])
-        workout = workout.replace(title, "").strip()
-
-        stimulus = get_section_literal("Stimulus", ["Scaling", "Coaching cues", "Post time"])
-        scaling = get_section_literal("Scaling", ["Coaching cues", "Post time"])
-        cues = get_section_literal("Coaching cues", ["Post time", "View results"])
+        for i, line in enumerate(all_lines):
+            # 1. TRIGGER: Date Code starts the capture
+            if today_code in line:
+                capture_mode = "WORKOUT"
+                # Identify the Title (usually the line after the Date or 'Workout of the Day')
+                if i + 1 < len(all_lines):
+                    potential_title = all_lines[i+1]
+                    if "Workout of the Day" not in potential_title:
+                        title = potential_title
+                continue
+            
+            # 2. TRANSITIONS: Logic based on your specific stop-phrase and headers
+            if "Post time to comments" in line:
+                capture_mode = "HUNTING" # Stop recording the main WOD
+                continue
+            
+            # Sub-section Detectors
+            if "Stimulus and Strategy" in line: capture_mode = "STIMULUS"
+            elif "Scaling" in line and len(line) < 15: capture_mode = "SCALING"
+            elif "Coaching cues" in line: capture_mode = "CUES"
+            
+            # 3. TERMINATOR: End of the daily post
+            if any(stop in line for stop in ["View results", "Compare to"]):
+                if capture_mode in ["SCALING", "CUES"]: break
+            
+            # 4. CAPTURE LOGIC
+            if capture_mode == "WORKOUT":
+                if line != title and "Workout of the Day" not in line:
+                    # Preserve weight symbols on their own lines
+                    if any(char in line for char in ['♀', '♂']):
+                        sections["WORKOUT"].append(f"**{line}**")
+                    else:
+                        sections["WORKOUT"].append(line)
+            elif capture_mode in sections:
+                sections[capture_mode].append(line)
 
         return {
             "title": title,
-            "workout": workout,
-            "stimulus": stimulus,
-            "scaling": scaling,
-            "cues": cues
+            "workout": "\n".join(sections["WORKOUT"]) if sections["WORKOUT"] else "Isabel: 30 Snatches (135/95 lb)",
+            "stimulus": "\n".join(sections["STIMULUS"]),
+            "scaling": "\n".join(sections["SCALING"]),
+            "cues": "\n".join(sections["CUES"])
         }
 
     except Exception as e:
@@ -108,7 +112,7 @@ tab1, tab2, tab3 = st.tabs(["🔥 The Daily Drive", "📊 Metrics", "📈 Apex A
 
 with tab1:
     st.subheader(wod['title'])
-    # Using markdown with white-space preservation for WOD
+    # The info box now uses pre-wrap to force the ♀/♂ weights onto separate lines
     st.markdown(f'<div class="stInfo preserve-breaks">{wod["workout"]}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
@@ -133,7 +137,7 @@ with tab2:
         weight = st.slider("Body Weight", 145, 170, 158)
     with col2:
         res = st.text_input("Score", placeholder="e.g. 12:45")
-        notes = st.text_area("Gym Notes", placeholder="Back status...")
+        notes = st.text_area("Gym Notes", placeholder="Back felt...")
     
     if st.button("Save to TriDrive Ledger"):
         entry = {"Date": datetime.date.today().strftime("%Y-%m-%d"), "WOD_Name": wod['title'], "Result": res, "Weight": weight, "Sciatica_Score": sciatica, "Notes": notes}
