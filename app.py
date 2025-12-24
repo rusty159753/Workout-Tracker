@@ -16,9 +16,9 @@ try:
 except ImportError:
     READY_TO_SYNC = False
 
-# --- SESSION STATE INITIALIZATION (The "Brain") ---
+# --- SESSION STATE INITIALIZATION ---
 if 'view_mode' not in st.session_state:
-    st.session_state['view_mode'] = 'VIEWER' # Default to Read-Only
+    st.session_state['view_mode'] = 'VIEWER'
 if 'current_wod' not in st.session_state:
     st.session_state['current_wod'] = {}
 
@@ -77,15 +77,18 @@ def parse_workout_data(wod_data):
     parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
     return parsed
 
-# --- STEP 3: ENGINES (Cloudscraper Only - No Sync Yet) ---
-# Note: We removed the auto-sync to sheet. We only sync when you click SAVE in Workbench.
+# --- STEP 3: ENGINES (Robust Cloudscraper) ---
 def fetch_wod_content():
     local_tz = pytz.timezone("US/Mountain")
     today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows'})
+    
+    # Restored 'mobile: False' to ensure robust desktop emulation
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 
     try:
-        response = scraper.get(f"https://www.crossfit.com/{today_id}", timeout=15)
+        url = f"https://www.crossfit.com/{today_id}"
+        response = scraper.get(url, timeout=20) # Increased timeout
+        
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             next_data = soup.find('script', id='__NEXT_DATA__')
@@ -95,40 +98,48 @@ def fetch_wod_content():
                     parsed = parse_workout_data(wod_data)
                     parsed['id'] = today_id
                     return parsed
-        return {"error": "Connection Failed"}
-    except Exception as e:
-        return {"error": str(e)}
+            
+            # Debug: If 200 but no data, showing the page title helps us guess if it's a "Challenge Page"
+            page_title = soup.title.string.strip() if soup.title else "No Title"
+            return {"error": f"Status 200 but No Data found. Page Title: '{page_title}'"}
 
-# --- UI LAYER: THE SPLIT ---
+        return {"error": f"Connection Failed: Status {response.status_code}"}
+        
+    except Exception as e:
+        return {"error": f"Crash: {str(e)}"}
+
+# --- UI LAYER ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 st.title("TRI⚡DRIVE")
 
 if not READY_TO_SYNC:
     st.error("Missing Dependencies: cloudscraper, gspread")
 else:
-    # --- VIEW MODE: READ ONLY ---
+    # --- VIEW MODE ---
     if st.session_state['view_mode'] == 'VIEWER':
         
-        # Only fetch if we haven't already (Cache speedup)
-        if not st.session_state['current_wod']:
-            with st.spinner("Syncing..."):
+        # LOGIC FIX: Do not use cache if it contains an error
+        cached_data = st.session_state.get('current_wod', {})
+        if not cached_data or "error" in cached_data:
+            with st.spinner("Connecting to HQ..."):
                 wod = fetch_wod_content()
-                st.session_state['current_wod'] = wod
+                # Only cache if successful
+                if "error" not in wod:
+                    st.session_state['current_wod'] = wod
         else:
-            wod = st.session_state['current_wod']
+            wod = cached_data
 
         if wod and "workout" in wod:
             st.subheader(wod['title'])
             st.info(wod['workout'])
             
-            # The Trigger Button
+            # The Trigger
             if st.button("🚀 IMPORT TO WORKBENCH", use_container_width=True):
                 st.session_state['view_mode'] = 'WORKBENCH'
                 st.rerun()
 
             st.divider()
             
-            # Read-Only Details
             if wod.get('strategy'):
                 with st.expander("Stimulus & Strategy"):
                     st.write(wod['strategy'])
@@ -139,21 +150,23 @@ else:
                     st.write(f"**Intermediate:** {wod.get('intermediate', 'N/A')}")
 
         else:
-            st.error(f"Error: {wod.get('error')}")
+            # Error Display with Retry
+            st.error(f"⚠️ {wod.get('error')}")
+            if st.button("🔄 Retry Connection"):
+                st.session_state['current_wod'] = {} # Clear cache
+                st.rerun()
 
-    # --- WORKBENCH MODE: EDITABLE (Phase 3 Prep) ---
+    # --- WORKBENCH MODE ---
     elif st.session_state['view_mode'] == 'WORKBENCH':
         st.caption("🛠️ WORKBENCH ACTIVE")
         
-        # Grab data from session
         wod = st.session_state['current_wod']
         
         st.success(f"Imported: {wod['title']}")
         st.markdown(f"**Rx Workout:** {wod['workout']}")
         
-        st.warning("⚠️ Phase 3 Construction Zone: The Parsing Grid goes here.")
+        st.warning("⚠️ Phase 3 Construction Zone")
         
-        # Back Button
         if st.button("⬅️ Back to Viewer"):
             st.session_state['view_mode'] = 'VIEWER'
             st.rerun()
