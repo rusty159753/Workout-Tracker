@@ -10,6 +10,26 @@ from bs4 import BeautifulSoup
 # --- 1. CONFIG MUST BE FIRST ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 
+# --- CUSTOM CSS: FORCE WHITE TEXT ON BLUE ---
+st.markdown("""
+<style>
+/* Target the st.info box */
+[data-testid="stNotification"] {
+    background-color: #172b4d; /* Deep CrossFit Blue */
+    border: 1px solid #3b5e8c;
+    color: #ffffff !important; /* Force White Text */
+}
+[data-testid="stNotification"] p {
+    color: #ffffff !important; /* Force White Paragraphs */
+    font-size: 16px;
+    line-height: 1.6;
+}
+[data-testid="stMarkdownContainer"] ul {
+    color: #ffffff !important; /* Force White Lists */
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- DEBUG: Hard Reset Button ---
 with st.sidebar:
     st.header("🔧 Diagnostics")
@@ -35,38 +55,38 @@ if 'view_mode' not in st.session_state:
 if 'current_wod' not in st.session_state:
     st.session_state['current_wod'] = {}
 
-# --- 4. THE JANITOR (Version 4.0: Encoding Fix) ---
+# --- 4. THE JANITOR (Version 5.0: Paragraphs & Lists) ---
 def sanitize_text(text):
     if not text: return ""
     
-    # 1. Brutal Replacement of the specific artifacts you saw
+    # 1. Encoding Fixes (Smart Quotes)
     replacements = {
-        "â": "'",        # Common misread smart quote
-        "’": "'",        # Smart apostrophe
-        "‘": "'",        # Smart apostrophe
-        "“": '"',        # Smart quote open
-        "”": '"',        # Smart quote close
-        "–": "-",        # En-dash
-        "—": "-",        # Em-dash
-        "…": "..."       # Ellipsis
+        "": "'", "â": "'", "’": "'", "‘": "'", 
+        "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."
     }
     for bad, good in replacements.items():
         text = text.replace(bad, good)
 
-    # 2. Soup Cleaning (Preserve Newlines)
+    # 2. Soup Cleaning with Structural Awareness
     soup = BeautifulSoup(text, "html.parser")
+    
+    # Force paragraphs and divs to have double newlines for spacing
+    for tag in soup.find_all(['p', 'div', 'li']):
+        tag.insert_after("\n\n")
+        
+    # Force breaks to be single newlines
     for br in soup.find_all("br"):
         br.replace_with("\n")
         
-    text = soup.get_text(separator="\n", strip=True)
+    text = soup.get_text(separator="", strip=True) 
     
-    # 3. Unicode Normalization (The Final Polish)
+    # 3. Unicode Normalization
     text = unicodedata.normalize("NFKD", text)
     
-    # 4. Formatting Fixes
-    text = re.sub(r'\n{3,}', '\n\n', text) # Remove massive gaps
+    # 4. Clean up massive gaps (more than 2 newlines)
+    text = re.sub(r'\n{3,}', '\n\n', text)
     
-    return text
+    return text.strip()
 
 # --- 5. THE MAPPER ---
 def parse_workout_data(wod_data):
@@ -99,7 +119,6 @@ def parse_workout_data(wod_data):
     workout_end = indices[0]['start'] if indices else len(full_blob)
     workout_text = full_blob[:workout_end].strip()
     
-    # Cutter Logic: Be careful not to cut too much
     post_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+to\s+comments)", workout_text, re.IGNORECASE)
     if post_match:
         parsed['workout'] = workout_text[:post_match.start()].strip()
@@ -132,7 +151,6 @@ def fetch_wod_content():
         response = scraper.get(url, timeout=10)
         
         if response.status_code == 200:
-            # FORCE UTF-8 DECODING (Crucial step added)
             response.encoding = 'utf-8' 
             html_text = response.text
 
@@ -154,7 +172,6 @@ def fetch_wod_content():
             # ATTEMPT 2: HTML
             article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
             if article:
-                # Pass the HTML string to preserve tags for Janitor
                 raw_html = str(article)
                 parsed = parse_workout_data(raw_html)
                 parsed['id'] = today_id
@@ -199,7 +216,8 @@ else:
             if "workout" in wod:
                 st.subheader(wod['title'])
                 
-                # Markdown for vertical lists
+                # --- WOD DISPLAY (White Text via CSS) ---
+                # Double space for markdown line breaks
                 formatted_workout = wod['workout'].replace("\n", "  \n")
                 st.info(formatted_workout) 
                 
@@ -209,17 +227,40 @@ else:
 
                 st.divider()
                 
+                # --- STRATEGY ---
                 if wod.get('strategy'):
                     with st.expander("Stimulus & Strategy"):
-                        # Use markdown here too to fix list formatting inside Expanders
                         st.markdown(wod['strategy'].replace("\n", "  \n"))
                 
-                if any([wod.get('scaling'), wod.get('intermediate')]):
-                    with st.expander("Scaling Options"):
-                        if wod.get('scaling'):
-                            st.markdown(f"**Rx Scaling:** \n{wod['scaling'].replace(chr(10), '  '+chr(10))}")
-                        if wod.get('intermediate'):
-                            st.markdown(f"**Intermediate:** \n{wod['intermediate'].replace(chr(10), '  '+chr(10))}")
+                # --- SCALING (TABS RESTORED) ---
+                # This checks if ANY scaling info exists
+                if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
+                    with st.expander("Scaling Options", expanded=False):
+                        tab_rx, tab_int, tab_beg = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+                        
+                        with tab_rx:
+                            if wod.get('scaling'):
+                                st.markdown(wod['scaling'].replace("\n", "  \n"))
+                            else:
+                                st.caption("No specific Rx scaling instructions.")
+                                
+                        with tab_int:
+                            if wod.get('intermediate'):
+                                st.markdown(wod['intermediate'].replace("\n", "  \n"))
+                            else:
+                                st.caption("No Intermediate option listed.")
+                                
+                        with tab_beg:
+                            if wod.get('beginner'):
+                                st.markdown(wod['beginner'].replace("\n", "  \n"))
+                            else:
+                                st.caption("No Beginner option listed.")
+
+                # --- COACHING CUES (RESTORED) ---
+                if wod.get('cues'):
+                    with st.expander("Coaching Cues"):
+                        st.markdown(wod['cues'].replace("\n", "  \n"))
+
             else:
                 st.error("Data Corrupted. Please hit Hard Reset.")
 
