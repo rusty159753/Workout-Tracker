@@ -35,39 +35,36 @@ if 'view_mode' not in st.session_state:
 if 'current_wod' not in st.session_state:
     st.session_state['current_wod'] = {}
 
-# --- 4. THE JANITOR (Version 3.0: Smarter & Gentler) ---
+# --- 4. THE JANITOR (Version 4.0: Encoding Fix) ---
 def sanitize_text(text):
     if not text: return ""
     
-    # MANUAL CLEANUP: Fix common "sloppy" characters before parsing
-    # These often break unicode normalization
+    # 1. Brutal Replacement of the specific artifacts you saw
     replacements = {
-        "â": "'",
-        "’": "'",
-        "“": '"',
-        "”": '"',
-        "–": "-",
-        "…": "..."
+        "â": "'",        # Common misread smart quote
+        "’": "'",        # Smart apostrophe
+        "‘": "'",        # Smart apostrophe
+        "“": '"',        # Smart quote open
+        "”": '"',        # Smart quote close
+        "–": "-",        # En-dash
+        "—": "-",        # Em-dash
+        "…": "..."       # Ellipsis
     }
     for bad, good in replacements.items():
         text = text.replace(bad, good)
 
-    # SOUP CLEANING: Handle line breaks explicitly
+    # 2. Soup Cleaning (Preserve Newlines)
     soup = BeautifulSoup(text, "html.parser")
-    
-    # Force <br> tags to be actual newlines
     for br in soup.find_all("br"):
         br.replace_with("\n")
         
-    # Get text with newlines preserved
     text = soup.get_text(separator="\n", strip=True)
     
-    # NORMALIZE: Standardize text encoding
+    # 3. Unicode Normalization (The Final Polish)
     text = unicodedata.normalize("NFKD", text)
     
-    # FORMATTING: Fix weird spacing but keep the list structure
-    # Collapse more than 2 newlines into just 2
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    # 4. Formatting Fixes
+    text = re.sub(r'\n{3,}', '\n\n', text) # Remove massive gaps
     
     return text
 
@@ -82,7 +79,6 @@ def parse_workout_data(wod_data):
         full_blob = sanitize_text(raw_main + "\n\n" + raw_stim)
         title = wod_data.get('title', 'Workout of the Day')
 
-    # Define headers to look for sections
     headers = {
         "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
         "Scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
@@ -100,18 +96,16 @@ def parse_workout_data(wod_data):
     indices.sort(key=lambda x: x['start'])
     parsed = {"workout": "", "history": None, "strategy": "", "scaling": "", "intermediate": "", "beginner": "", "cues": ""}
 
-    # CUTTER LOGIC: Determine where the main workout text ends
     workout_end = indices[0]['start'] if indices else len(full_blob)
     workout_text = full_blob[:workout_end].strip()
     
-    # Remove the "Post time to comments" footer if present
+    # Cutter Logic: Be careful not to cut too much
     post_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+to\s+comments)", workout_text, re.IGNORECASE)
     if post_match:
         parsed['workout'] = workout_text[:post_match.start()].strip()
     else:
         parsed['workout'] = workout_text
 
-    # Extract other sections
     for i, item in enumerate(indices):
         key, start = item['key'], item['end']
         end = indices[i+1]['start'] if (i + 1 < len(indices)) else len(full_blob)
@@ -138,7 +132,11 @@ def fetch_wod_content():
         response = scraper.get(url, timeout=10)
         
         if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
+            # FORCE UTF-8 DECODING (Crucial step added)
+            response.encoding = 'utf-8' 
+            html_text = response.text
+
+            soup = BeautifulSoup(html_text, 'html.parser')
             
             # ATTEMPT 1: JSON
             next_data = soup.find('script', id='__NEXT_DATA__')
@@ -156,8 +154,8 @@ def fetch_wod_content():
             # ATTEMPT 2: HTML
             article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
             if article:
-                # Pass the raw HTML element, NOT just text, so Janitor can find <br> tags
-                raw_html = str(article) 
+                # Pass the HTML string to preserve tags for Janitor
+                raw_html = str(article)
                 parsed = parse_workout_data(raw_html)
                 parsed['id'] = today_id
                 parsed['title'] = f"WOD {today_id}"
@@ -169,7 +167,6 @@ def fetch_wod_content():
         return {"error": f"Status {response.status_code}"}
         
     except Exception as e:
-        # SYNTAX ERROR FIXED HERE
         return {"error": f"Error: {str(e)}"}
 
 # --- 7. UI LAYER ---
@@ -202,7 +199,7 @@ else:
             if "workout" in wod:
                 st.subheader(wod['title'])
                 
-                # Render with markdown to respect newlines
+                # Markdown for vertical lists
                 formatted_workout = wod['workout'].replace("\n", "  \n")
                 st.info(formatted_workout) 
                 
@@ -214,12 +211,15 @@ else:
                 
                 if wod.get('strategy'):
                     with st.expander("Stimulus & Strategy"):
-                        st.write(wod['strategy'])
+                        # Use markdown here too to fix list formatting inside Expanders
+                        st.markdown(wod['strategy'].replace("\n", "  \n"))
                 
                 if any([wod.get('scaling'), wod.get('intermediate')]):
                     with st.expander("Scaling Options"):
-                        st.write(f"**Rx Scaling:** {wod.get('scaling', 'N/A')}")
-                        st.write(f"**Intermediate:** {wod.get('intermediate', 'N/A')}")
+                        if wod.get('scaling'):
+                            st.markdown(f"**Rx Scaling:** \n{wod['scaling'].replace(chr(10), '  '+chr(10))}")
+                        if wod.get('intermediate'):
+                            st.markdown(f"**Intermediate:** \n{wod['intermediate'].replace(chr(10), '  '+chr(10))}")
             else:
                 st.error("Data Corrupted. Please hit Hard Reset.")
 
