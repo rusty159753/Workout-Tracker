@@ -35,23 +35,39 @@ if 'view_mode' not in st.session_state:
 if 'current_wod' not in st.session_state:
     st.session_state['current_wod'] = {}
 
-# --- 4. THE JANITOR (Refined for Formatting) ---
+# --- 4. THE JANITOR (Version 3.0: Smarter & Gentler) ---
 def sanitize_text(text):
     if not text: return ""
     
-    # FIX: Use \n separator for HTML tags instead of space
-    # This keeps list items on their own lines
-    text = BeautifulSoup(text, "html.parser").get_text(separator="\n", strip=True)
+    # MANUAL CLEANUP: Fix common "sloppy" characters before parsing
+    # These often break unicode normalization
+    replacements = {
+        "â": "'",
+        "’": "'",
+        "“": '"',
+        "”": '"',
+        "–": "-",
+        "…": "..."
+    }
+    for bad, good in replacements.items():
+        text = text.replace(bad, good)
+
+    # SOUP CLEANING: Handle line breaks explicitly
+    soup = BeautifulSoup(text, "html.parser")
     
-    # Normalize unicode
+    # Force <br> tags to be actual newlines
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
+        
+    # Get text with newlines preserved
+    text = soup.get_text(separator="\n", strip=True)
+    
+    # NORMALIZE: Standardize text encoding
     text = unicodedata.normalize("NFKD", text)
     
-    # Remove excessive blank lines (more than 2) but keep single newlines
+    # FORMATTING: Fix weird spacing but keep the list structure
+    # Collapse more than 2 newlines into just 2
     text = re.sub(r'\n{3,}', '\n\n', text)
-    
-    # Clean up horizontal spaces (tabs/spaces) but NOT newlines
-    # The (?m) flag enables multiline mode
-    text = re.sub(r'[ \t]+', ' ', text).strip()
     
     return text
 
@@ -63,10 +79,10 @@ def parse_workout_data(wod_data):
     else:
         raw_main = wod_data.get('main_text', '')
         raw_stim = wod_data.get('stimulus', '')
-        # Add newline between sections so Stimulus doesn't stick to the Workout
-        full_blob = sanitize_text(raw_main + "\n" + raw_stim) 
+        full_blob = sanitize_text(raw_main + "\n\n" + raw_stim)
         title = wod_data.get('title', 'Workout of the Day')
 
+    # Define headers to look for sections
     headers = {
         "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
         "Scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
@@ -84,15 +100,18 @@ def parse_workout_data(wod_data):
     indices.sort(key=lambda x: x['start'])
     parsed = {"workout": "", "history": None, "strategy": "", "scaling": "", "intermediate": "", "beginner": "", "cues": ""}
 
+    # CUTTER LOGIC: Determine where the main workout text ends
     workout_end = indices[0]['start'] if indices else len(full_blob)
     workout_text = full_blob[:workout_end].strip()
     
+    # Remove the "Post time to comments" footer if present
     post_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+to\s+comments)", workout_text, re.IGNORECASE)
     if post_match:
         parsed['workout'] = workout_text[:post_match.start()].strip()
     else:
         parsed['workout'] = workout_text
 
+    # Extract other sections
     for i, item in enumerate(indices):
         key, start = item['key'], item['end']
         end = indices[i+1]['start'] if (i + 1 < len(indices)) else len(full_blob)
@@ -137,9 +156,9 @@ def fetch_wod_content():
             # ATTEMPT 2: HTML
             article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
             if article:
-                # IMPORTANT: Pass the article object itself to get_text with separators later
-                raw_text = article.get_text(separator="\n", strip=True) # Ensure newline separator here too
-                parsed = parse_workout_data(raw_text)
+                # Pass the raw HTML element, NOT just text, so Janitor can find <br> tags
+                raw_html = str(article) 
+                parsed = parse_workout_data(raw_html)
                 parsed['id'] = today_id
                 parsed['title'] = f"WOD {today_id}"
                 return parsed
@@ -150,4 +169,78 @@ def fetch_wod_content():
         return {"error": f"Status {response.status_code}"}
         
     except Exception as e:
-        return {"error": f"Error: {str(
+        # SYNTAX ERROR FIXED HERE
+        return {"error": f"Error: {str(e)}"}
+
+# --- 7. UI LAYER ---
+st.title("TRI⚡DRIVE")
+st.write("---") 
+
+if not READY_TO_SYNC:
+    st.error("Missing Dependencies")
+else:
+    # --- VIEW MODE ---
+    if st.session_state['view_mode'] == 'VIEWER':
+        
+        cached_data = st.session_state.get('current_wod', {})
+        
+        if not cached_data or "error" in cached_data:
+            st.info("📡 Connecting to Headquarters...") 
+            wod = fetch_wod_content()
+            
+            if "error" not in wod:
+                st.session_state['current_wod'] = wod
+                st.rerun() 
+            else:
+                st.error(f"⚠️ {wod['error']}")
+                if st.button("🔄 Retry Connection"):
+                    st.session_state['current_wod'] = {}
+                    st.rerun()
+        else:
+            # RENDER SUCCESS STATE
+            wod = cached_data
+            if "workout" in wod:
+                st.subheader(wod['title'])
+                
+                # Render with markdown to respect newlines
+                formatted_workout = wod['workout'].replace("\n", "  \n")
+                st.info(formatted_workout) 
+                
+                if st.button("🚀 IMPORT TO WORKBENCH", use_container_width=True):
+                    st.session_state['view_mode'] = 'WORKBENCH'
+                    st.rerun()
+
+                st.divider()
+                
+                if wod.get('strategy'):
+                    with st.expander("Stimulus & Strategy"):
+                        st.write(wod['strategy'])
+                
+                if any([wod.get('scaling'), wod.get('intermediate')]):
+                    with st.expander("Scaling Options"):
+                        st.write(f"**Rx Scaling:** {wod.get('scaling', 'N/A')}")
+                        st.write(f"**Intermediate:** {wod.get('intermediate', 'N/A')}")
+            else:
+                st.error("Data Corrupted. Please hit Hard Reset.")
+
+    # --- WORKBENCH MODE ---
+    elif st.session_state['view_mode'] == 'WORKBENCH':
+        st.caption("🛠️ WORKBENCH ACTIVE")
+        wod = st.session_state.get('current_wod', {})
+        
+        if not wod:
+            st.error("No WOD loaded.")
+            if st.button("Back"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
+        else:
+            st.success(f"Imported: {wod.get('title', 'Unknown')}")
+            
+            formatted_rx = wod.get('workout', 'No Data').replace("\n", "  \n")
+            st.markdown(f"**Rx Workout:** \n{formatted_rx}")
+            
+            st.warning("⚠️ Phase 3 Construction Zone")
+            
+            if st.button("⬅️ Back to Viewer"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
