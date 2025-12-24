@@ -4,39 +4,31 @@ from bs4 import BeautifulSoup
 import datetime
 import hashlib
 import re
-from streamlit_gsheets import GSheetsConnection
 
-# --- THE REDUNDANCY ENGINE ---
-def execute_hardened_final_scrape():
+def execute_final_publish_scrape():
     rss_url = "https://www.crossfit.com/feed"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X)"}
     
-    # 2-Day Rolling Window (Safety for Timezone Rollovers)
+    # Target IDs: 251223 and 251222
     today = datetime.date.today()
     target_dates = [today.strftime("%y%m%d"), (today - datetime.timedelta(days=1)).strftime("%y%m%d")]
     
+    found_items_for_debug = []
+
     try:
         response = requests.get(rss_url, headers=headers, timeout=20)
-        # Use html.parser: Built-in to Python, no extra installs, handles malformed XML
         soup = BeautifulSoup(response.text, 'html.parser') 
         items = soup.find_all('item')
         
-        for date_id in target_dates:
-            for item in items:
-                # 1. MULTI-FACTOR IDENTITY SCORE
-                title = item.find('title').get_text(strip=True) if item.find('title') else ""
-                category = item.find('category').get_text(strip=True).lower() if item.find('category') else ""
-                
-                confidence_score = 0
-                if "workout of the day" in category: confidence_score += 1
-                if re.match(r'^\d{6}$', title): confidence_score += 1
-                if date_id in title: confidence_score += 1
-                
-                # Minimum score of 2 ensures we don't pull news articles or random posts
-                if confidence_score >= 2:
-                    # 2. STABLE LINK SELECTION (GUID is more reliable over 3-year history)
+        for item in items:
+            title = item.find('title').get_text(strip=True) if item.find('title') else "No Title"
+            category = item.find('category').get_text(strip=True).lower() if item.find('category') else "No Category"
+            found_items_for_debug.append(f"T: {title} | C: {category}")
+
+            # NEW LOGIC: Any item with the date ID in the title is likely our WOD
+            for date_id in target_dates:
+                if date_id in title:
+                    # Found a date match! Now get the link.
                     link_tag = item.find('guid') or item.find('link')
                     target_link = link_tag.get_text(strip=True) if link_tag else ""
                     
@@ -44,12 +36,8 @@ def execute_hardened_final_scrape():
                         res = requests.get(target_link, headers=headers, timeout=15)
                         page_soup = BeautifulSoup(res.content, 'html.parser')
                         
-                        # 3. SEMANTIC CONTENT RECOVERY
-                        # Priority: <article> tag -> Content/Post/Entry Div -> Body Fallback
-                        content = (
-                            page_soup.find('article') or 
-                            page_soup.find('div', class_=re.compile(r'content|post|entry|wod', re.I))
-                        )
+                        # Content recovery
+                        content = page_soup.find('article') or page_soup.find('div', class_=re.compile(r'content|post|entry|wod', re.I))
                         
                         if content:
                             full_text = content.get_text(separator="\n", strip=True)
@@ -60,32 +48,22 @@ def execute_hardened_final_scrape():
                                 "hash": hashlib.sha256(full_text.encode('utf-8')).hexdigest()
                             }
     except Exception as e:
-        st.sidebar.error(f"System Audit Alert: {e}")
-    return None
-
-# --- UI LAYER ---
-st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
-st.title("TRI⚡DRIVE")
-
-# Visual feedback for the user
-with st.status("Syncing with CrossFit HQ Feed...", expanded=False) as status:
-    wod = execute_hardened_final_scrape()
-    if wod:
-        status.update(label="Workout Verified!", state="complete")
-    else:
-        status.update(label="Searching Archives...", state="error")
-
-if wod:
-    st.subheader(f"WOD: {wod['title']}")
-    # Preserving the raw movement formatting for readability
-    st.code(wod['workout'], language=None)
+        st.error(f"Critical System Error: {e}")
     
-    # Audit trail for the Owner
+    return {"debug": found_items_for_debug}
+
+# --- UI ---
+st.title("TRI⚡DRIVE")
+wod = execute_final_publish_scrape()
+
+if isinstance(wod, dict) and "workout" in wod:
+    st.subheader(f"WOD: {wod['title']}")
+    st.code(wod['workout'], language=None)
     st.sidebar.success("Found: 2025 Validated Content")
-    st.sidebar.info(f"Integrity Hash: {wod['hash'][:12]}")
-    st.sidebar.markdown(f"[Source URL]({wod['url']})")
 else:
-    st.error("Verified 2025 WOD not currently found. The feed may be updating.")
-    if st.button("Force Re-Sync"):
-        st.rerun()
-            
+    st.error("Verified 2025 WOD not found in current feed.")
+    with st.expander("Technical Debugging Info"):
+        st.write("Last 10 items found in feed:")
+        for entry in wod.get("debug", [])[:10]:
+            st.write(entry)
+                
