@@ -148,8 +148,6 @@ def parse_workout_data(wod_data):
     raw_workout = full_blob[:workout_end].strip()
     
     # The "Mashed Number" Fix: Only runs on the workout list
-    # Finds a lowercase letter -> space -> number -> space/letter
-    # Ex: "walk 2 candlestick" -> "walk\n2 candlestick"
     formatted_workout = re.sub(r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])', '\n', raw_workout)
     parsed['workout'] = formatted_workout
 
@@ -158,7 +156,7 @@ def parse_workout_data(wod_data):
     if footer_match:
         parsed['workout'] = parsed['workout'][:footer_match.start()].strip()
 
-    # Step 4: Map the rest (Keeping Scaling/Strategy natural)
+    # Step 4: Map the rest
     for i, item in enumerate(indices):
         key = item['key']
         start = item['end']
@@ -275,12 +273,87 @@ elif st.session_state['app_mode'] == 'HOME':
         
         # UI FORMATTING FIX
         raw_workout = wod.get('workout', 'No Data')
-        # Double space replacement for Streamlit Markdown
         formatted_workout = raw_workout.replace("\n", "  \n")
         st.info(formatted_workout)
         
         if st.button("⚡ START WORKOUT", use_container_width=True):
             st.session_state['app_mode'] = 'WORKBENCH'
+            st.session_state['wod_in_progress'] = True 
+            st.rerun()
+            
+        st.divider()
+        if wod.get('strategy'):
+            with st.expander("🧠 Stimulus & Strategy"):
+                st.markdown(wod['strategy'].replace("\n", "  \n"))
+        
+        if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
+            with st.expander("⚖️ Scaling Options"):
+                t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+                with t1: st.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
+                with t2: st.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
+                with t3: st.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
+
+        if wod.get('cues'):
+            with st.expander("📢 Coaching Cues"):
+                st.markdown(wod['cues'].replace("\n", "  \n"))
+
+# 3. WORKBENCH
+elif st.session_state['app_mode'] == 'WORKBENCH':
+    st.caption("🏋️ ACTIVE SESSION")
+    wod = st.session_state.get('current_wod', {})
+    title_safe = wod.get('title', 'Unknown WOD')
+    st.success("Target: " + title_safe)
+    
+    raw_workout = str(wod.get('workout', ''))
+    lines = raw_workout.split('\n')
+    
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        is_header = False
+        if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+            is_header = True
+            
+        is_movement = False
+        if line.startswith("•") or line[0].isdigit():
+            is_movement = True
+            
+        if is_header and not is_movement:
+            st.markdown("**" + line + "**")
+        elif is_movement:
+            key_id = "chk_" + str(idx)
+            clean_text = line.replace("• ", "").strip()
+            st.checkbox(clean_text, key=key_id)
+        else:
+            st.markdown(line)
+            
+    st.divider()
+    st.markdown("#### 🏁 Post Score")
+    result_input = st.text_input("Final Time / Load / Score", key="res_input")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("❌ Exit (No Save)"):
+            st.session_state['app_mode'] = 'HOME'
+            st.rerun()
+    with c2:
+        if st.button("💾 Log to Whiteboard", type="primary"):
+            if not result_input:
+                st.error("Enter a score to log.")
+            else:
+                st.toast("Syncing to Cloud...")
+                success = push_score_to_sheet(title_safe, result_input)
+                if success:
+                    st.success("Score Posted!")
+                    st.session_state['wod_in_progress'] = False
+                    st.session_state['app_mode'] = 'HOME'
+                    st.rerun()
+                else:
+                    st.error("Sync Failed.")
+      st.session_state['app_mode'] = 'WORKBENCH'
             st.session_state['wod_in_progress'] = True 
             st.rerun()
             
