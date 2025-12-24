@@ -3,93 +3,70 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
+import datetime
 
-def execute_locked_json_harvest():
-    # Strategy: Homepage Discovery to find the most recent canonical URL
+def execute_deep_discovery_harvest():
+    # 1. ATTEMPT DYNAMIC DISCOVERY
     homepage_url = "https://www.crossfit.com"
-    # Googlebot headers force the server to provide pre-rendered data blocks
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+    latest_id = None
     
     try:
-        # 1. DISCOVERY PHASE
         home_res = requests.get(homepage_url, headers=headers, timeout=10)
         home_soup = BeautifulSoup(home_res.text, 'html.parser')
         
-        # Scan for the first ID-based link (/YYMMDD)
-        latest_path = None
-        for a in home_soup.find_all('a', href=True):
-            if re.search(r'/(\d{6})$', a['href']):
-                latest_path = a['href']
-                break
-        
-        if not latest_path:
-            return {"error": "Could not identify the latest workout ID on the homepage."}
+        # AGGRESSIVE SEARCH: Look for any link containing 6 digits in a row
+        all_links = home_soup.find_all(['a', 'link'], href=True)
+        for a in all_links:
+            href = a['href']
+            # Pattern: Look for 6 digits (YYMMDD) anywhere in the URL path
+            match = re.search(r'(\d{6})', href)
+            if match:
+                potential_id = match.group(1)
+                # Basic validation: ensure it's not a year like 202500
+                if potential_id.startswith('2'):
+                    latest_id = potential_id
+                    break
 
-        # 2. TARGETING PHASE
-        target_url = f"https://www.crossfit.com{latest_path}" if latest_path.startswith('/') else latest_path
+        # 2. FALLBACK: If homepage discovery fails, use the 'Current Date' ID
+        if not latest_id:
+            latest_id = datetime.date.today().strftime("%y%m%d")
+
+        # 3. EXTRACTION: Navigate to the ID page
+        target_url = f"https://www.crossfit.com/{latest_id}"
         page_res = requests.get(target_url, headers=headers, timeout=15)
         page_res.encoding = 'utf-8'
         page_soup = BeautifulSoup(page_res.text, 'html.parser')
         
-        # 3. EXTRACTION PHASE (JSON ENGINE)
-        # Targeting the Next.js data shell for the 'Final Content'
-        next_data_script = page_soup.find('script', id='__NEXT_DATA__')
-        
-        if next_data_script:
-            data = json.loads(next_data_script.string)
-            # Schema Path: props -> pageProps -> wod
+        # Target the JSON Brain first (Next.js Data Shell)
+        next_data = page_soup.find('script', id='__NEXT_DATA__')
+        if next_data:
+            data = json.loads(next_data.string)
             wod_data = data.get('props', {}).get('pageProps', {}).get('wod', {})
-            
             if wod_data:
-                title = wod_data.get('title', 'Workout of the Day')
-                main_text = wod_data.get('main_text', '')
-                stimulus = wod_data.get('stimulus', '')
-                
-                # Combine for the final output
-                final_output = f"{main_text}"
-                if stimulus:
-                    final_output += f"\n\n**Stimulus & Strategy:**\n{stimulus}"
-                
                 return {
-                    "title": title,
-                    "content": final_output,
+                    "title": wod_data.get('title', f"WOD {latest_id}"),
+                    "content": f"{wod_data.get('main_text', '')}\n\n{wod_data.get('stimulus', '')}",
                     "url": target_url
                 }
 
-        # 4. FALLBACK PHASE (Greedy HTML)
-        # If the JSON structure shifts, we revert to the proven HTML Harvest
-        article = page_soup.find('article')
+        # Last Resort: Greedy Article Harvest
+        article = page_soup.find('article') or page_soup.find('main')
         if article:
-            return {
-                "title": "WOD (Harvest Mode)",
-                "content": article.get_text(separator="\n", strip=True),
-                "url": target_url
-            }
+            return {"title": f"WOD {latest_id}", "content": article.get_text(separator="\n", strip=True), "url": target_url}
 
     except Exception as e:
-        return {"error": f"Technical Failure: {str(e)}"}
-    return None
+        return {"error": str(e)}
+    return {"error": "Could not identify content on homepage or direct date-URL."}
 
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="TRI DRIVE", page_icon="⚡", layout="centered")
-
+# --- UI LAYER ---
 st.title("TRI⚡DRIVE")
 
-with st.spinner("Fetching final content..."):
-    wod = execute_locked_json_harvest()
+wod = execute_deep_discovery_harvest()
 
-if wod and "content" in wod:
-    st.subheader(wod.get('title', 'Latest Workout'))
-    
-    # Process symbols for the Pixel display
-    display_text = wod['content'].replace('♂', '(M)').replace('♀', '(F)')
-    
-    # Using st.info for a clean, professional card look
-    st.info(display_text)
-    
-    st.sidebar.success("Status: Verified JSON Pull")
-    st.sidebar.markdown(f"[Source: CrossFit.com]({wod['url']})")
+if "content" in wod:
+    st.subheader(wod['title'])
+    st.info(wod['content'].replace('♂', '(M)').replace('♀', '(F)'))
+    st.sidebar.success("Discovery: Deep Scan Active")
 else:
-    error_msg = wod.get("error") if wod else "Unknown error"
-    st.error(f"Logic failure: {error_msg}")
-    
+    st.error(f"Logic Failure: {wod.get('error')}")
