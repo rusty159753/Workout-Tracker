@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import datetime
 import re
 
-def execute_boundary_validated_scrape():
+def execute_dynamic_boundary_scrape():
     now = datetime.date.today()
     target_url = now.strftime("https://www.crossfit.com/wod/%Y/%m/%d")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
@@ -15,56 +15,65 @@ def execute_boundary_validated_scrape():
             response.encoding = 'utf-8'
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 1. REMOVE GLOBAL SITE NOISE
-            for noise in soup(["nav", "footer", "header", "script", "style"]):
+            # 1. STRIP NON-CONTENT BLOCKS
+            for noise in soup(["nav", "footer", "header", "script", "style", "aside"]):
                 noise.decompose()
-
-            # 2. DEFINE OUR BOUNDARY MARKERS
-            # Today's date (251223) and the universal CTA
-            date_anchor = now.strftime("%y%m%d")
-            cta_pattern = r"Post\s+.*?\s+to\s+comments"
             
-            # Get the full text stream of the page
-            page_text = soup.get_text(separator="\n", strip=True)
+            # 2. GET TEXT STREAM
+            full_text = soup.get_text(separator="  ", strip=True)
             
-            # 3. BOUNDARY LOCKING
-            # Find where the date appears (The Start)
-            start_idx = page_text.find(date_anchor)
+            # 3. DYNAMIC DATE START (The Flexible 6-String)
+            # This regex allows for any number of spaces between the YY MM DD
+            # It also doesn't care if 'Tuesday' or other words come before it.
+            date_signature = now.strftime("%y\s*?%m\s*?%d") 
+            start_match = re.search(date_signature, full_text)
             
-            if start_idx != -1:
-                # Find the CTA after the date (The End)
-                cta_match = re.search(cta_pattern, page_text[start_idx:], re.IGNORECASE)
+            if start_match:
+                start_idx = start_match.start()
                 
-                if cta_match:
-                    # Calculate end position relative to the start_idx
-                    end_idx = start_idx + cta_match.end()
+                # 4. VERB-DRIVEN CTA (The Verified End)
+                # Looking for a Verb (Post/Log/Record) followed by 'comments'
+                cta_pattern = r"(Post|Log|Share|Record|Submit|Check).*?comments"
+                end_match = re.search(cta_pattern, full_text[start_idx:], re.IGNORECASE)
+                
+                if end_match:
+                    # Capture up to the end of the CTA sentence
+                    end_idx = start_idx + end_match.end()
+                    workout_content = full_text[start_idx:end_idx].strip()
                     
-                    # EXTRACT THE VALIDATED WORKOUT
-                    raw_wod = page_text[start_idx:end_idx].strip()
-                    
-                    # Final cleanup of any stray menu fragments that snuck in
-                    clean_wod = re.sub(r'Log In|Create an account|View Profile', '', raw_wod)
+                    # 5. Rx SYMBOL PROTECTION
+                    # Replacing symbols ensures clean rendering on the Pixel
+                    workout_content = workout_content.replace('♂', '(M)').replace('♀', '(F)')
                     
                     return {
-                        "workout": clean_wod,
+                        "workout": workout_content,
                         "url": target_url,
-                        "validated": True
+                        "status": "Validated Success"
                     }
-        
-        return {"error": f"Status {response.status_code}"}
+                else:
+                    # Fallback: Capture a large block if the specific CTA is missing
+                    return {
+                        "workout": full_text[start_idx:start_idx+2000].strip(),
+                        "url": target_url,
+                        "status": "Fallback: CTA Missing"
+                    }
+                    
+        return {"error": f"HTTP {response.status_code}: Site unreachable."}
     except Exception as e:
         return {"error": str(e)}
 
 # --- UI LAYER ---
+st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 st.title("TRI⚡DRIVE")
 
-wod = execute_boundary_validated_scrape()
+wod = execute_dynamic_boundary_scrape()
 
 if wod and "workout" in wod:
     st.subheader(f"WOD {datetime.date.today().strftime('%y%m%d')}")
-    # Display the validated block
+    # Display the result in a clear, formatted box
     st.info(wod['workout'])
-    st.sidebar.success("Validators: Date & CTA Matched")
+    st.sidebar.success(f"Logic: {wod['status']}")
+    st.sidebar.markdown(f"[Source Page]({wod['url']})")
 else:
-    st.error("Boundary Failure: Date or 'Post to comments' CTA not found on page.")
+    st.error("Boundary Failure: Could not locate the dynamic Date Header or Action Verb.")
     
