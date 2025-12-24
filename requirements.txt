@@ -2,3 +2,5 @@ streamlit
 beautifulsoup4
 requests
 cloudscraper
+gspread
+oauth2client
