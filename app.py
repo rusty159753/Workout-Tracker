@@ -4,70 +4,70 @@ from bs4 import BeautifulSoup
 import datetime
 import re
 
-def execute_googlebot_targeted_scrape():
-    # 1. PREDICTIVE URL CONSTRUCTION
+def execute_surgical_wod_extract():
+    # Target today's URL directly via Googlebot spoofing
     now = datetime.date.today()
-    # CrossFit URL format: /wod/YYYY/MM/DD
     target_url = now.strftime("https://www.crossfit.com/wod/%Y/%m/%d")
-    
-    # 2. GOOGLEBOT SPOOFING (High-Priority Bypass)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
     
     try:
-        # Go straight to the workout page for today
         response = requests.get(target_url, headers=headers, timeout=15)
-        
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # 3. ROBUST CONTENT EXTRACTION
-            # We look for the workout text in the article or main content div
-            article = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|entry|wod', re.I))
+            # 1. KILL NOISE AT THE SOURCE
+            # Deleting these tags removes the menu links shown in your screenshot
+            for noise in soup(["nav", "header", "footer", "script", "style", "aside"]):
+                noise.decompose()
             
-            if article:
-                # Extract text and clean up whitespace
-                full_text = article.get_text(separator="\n", strip=True)
-                # Verify we aren't looking at a "Rest Day" or error page
+            # 2. TARGET THE MAIN BODY
+            main_body = soup.find('div', class_='col-sm-12') or soup.find('article')
+            
+            if main_body:
+                raw_text = main_body.get_text(separator="\n").split("\n")
+                
+                # 3. KEYWORD DENSITY FILTERING
+                # Blacklist: If these words are in the line, discard it (Kills the menu)
+                blacklist = ["gym", "store", "course", "about", "media", "games", "login", "account"]
+                # Whitelist: If it has these, it's likely part of the WOD (Protects Isabel)
+                whitelist = ["reps", "rounds", "time", "lb", "kg", "rx", "amrap", "emom", "set"]
+                
+                clean_lines = []
+                for line in raw_text:
+                    clean_line = line.strip()
+                    low_line = clean_line.lower()
+                    
+                    # Logic: Discard if in blacklist; Keep if it has numbers or whitelist keywords
+                    if any(word in low_line for word in blacklist):
+                        continue
+                    if any(word in low_line for word in whitelist) or any(char.isdigit() for char in clean_line):
+                        if len(clean_line) > 2: # Ignore stray characters
+                            clean_lines.append(clean_line)
+                
                 return {
                     "title": now.strftime("%y%m%d"),
-                    "workout": full_text,
+                    "workout": "\n".join(clean_lines),
                     "url": target_url
                 }
-        
-        # Fallback: If today isn't out yet, try yesterday
-        yesterday_url = (now - datetime.timedelta(days=1)).strftime("https://www.crossfit.com/wod/%Y/%m/%d")
-        res_yest = requests.get(yesterday_url, headers=headers, timeout=15)
-        if res_yest.status_code == 200:
-            soup_y = BeautifulSoup(res_yest.content, 'html.parser')
-            article_y = soup_y.find('article') or soup_y.find('div', class_=re.compile(r'content|post|entry|wod', re.I))
-            if article_y:
-                return {
-                    "title": (now - datetime.timedelta(days=1)).strftime("%y%m%d"),
-                    "workout": article_y.get_text(separator="\n", strip=True),
-                    "url": yesterday_url
-                }
-
-        return {"debug": f"Status: {response.status_code} | Target: {target_url}"}
-        
     except Exception as e:
         return {"error": str(e)}
+    return None
 
 # --- UI LAYER ---
+st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 st.title("TRI⚡DRIVE")
 
-wod = execute_googlebot_targeted_scrape()
+with st.spinner("Isolating Workout Data..."):
+    wod = execute_surgical_wod_extract()
 
 if isinstance(wod, dict) and "workout" in wod:
     st.subheader(f"WOD: {wod['title']}")
-    st.code(wod['workout'], language=None)
-    st.sidebar.success("Direct-Target Success")
-    st.sidebar.markdown(f"[View on Source Site]({wod['url']})")
+    # Using 'st.markdown' here can help handle formatting better than st.code
+    st.markdown(f"**{wod['workout']}**") 
+    st.sidebar.success("Surgical Extraction: Active")
+    st.sidebar.markdown(f"[Source URL]({wod['url']})")
 else:
-    st.error("Target Workout Page not yet accessible via Googlebot bypass.")
-    if "debug" in wod:
-        with st.expander("Diagnostic Telemetry"):
-            st.text(wod["debug"])
-            
+    st.error("WOD isolated, but no workout movements detected. Feed may be a 'Rest Day'.")
+    if st.button("Deep Refresh"):
+        st.rerun()
+        
