@@ -7,7 +7,10 @@ import unicodedata
 import hashlib
 from bs4 import BeautifulSoup
 
-# --- ENVIRONMENT CHECK ---
+# --- 1. CONFIG MUST BE FIRST (CRITICAL FIX) ---
+st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
+
+# --- 2. ENVIRONMENT CHECK ---
 try:
     import cloudscraper
     import gspread
@@ -16,13 +19,13 @@ try:
 except ImportError:
     READY_TO_SYNC = False
 
-# --- SESSION STATE ---
+# --- 3. SESSION STATE INITIALIZATION ---
 if 'view_mode' not in st.session_state:
     st.session_state['view_mode'] = 'VIEWER'
 if 'current_wod' not in st.session_state:
     st.session_state['current_wod'] = {}
 
-# --- STEP 1: THE JANITOR (UNTOUCHED) ---
+# --- 4. THE JANITOR ---
 def sanitize_text(text):
     if not text: return ""
     text = BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
@@ -31,9 +34,9 @@ def sanitize_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# --- STEP 2: THE MAPPER (RESTORED HYBRID LOGIC) ---
+# --- 5. THE MAPPER ---
 def parse_workout_data(wod_data):
-    # LOGIC RESTORED: Handle both Dictionary (JSON) and String (HTML) inputs
+    # Handle both Dictionary (JSON) and String (HTML) inputs
     if isinstance(wod_data, str):
         full_blob = sanitize_text(wod_data)
         title = "Workout of the Day"
@@ -74,62 +77,4 @@ def parse_workout_data(wod_data):
         end = indices[i+1]['start'] if (i + 1 < len(indices)) else len(full_blob)
         content = full_blob[start:end].strip()
         if key == "Stimulus": parsed['strategy'] = content
-        elif key == "Scaling": parsed['scaling'] = content
-        elif key == "Intermediate": parsed['intermediate'] = content
-        elif key == "Beginner": parsed['beginner'] = content
-        elif key == "Cues": parsed['cues'] = content
-
-    parsed['title'] = title
-    parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
-    return parsed
-
-# --- STEP 3: ENGINES (RESTORED FALLBACK) ---
-def fetch_wod_content():
-    local_tz = pytz.timezone("US/Mountain")
-    today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
-    
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-
-    try:
-        url = f"https://www.crossfit.com/{today_id}"
-        response = scraper.get(url, timeout=20)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # ATTEMPT 1: JSON Data (Preferred)
-            next_data = soup.find('script', id='__NEXT_DATA__')
-            if next_data:
-                try:
-                    json_payload = json.loads(next_data.string)
-                    wod_data = json_payload.get('props', {}).get('pageProps', {}).get('wod', {})
-                    if wod_data:
-                        parsed = parse_workout_data(wod_data)
-                        parsed['id'] = today_id
-                        return parsed
-                except:
-                    pass # JSON failed, try HTML
-
-            # ATTEMPT 2: HTML Fallback (RESTORED)
-            # This is what was missing. If JSON is empty, look for the text.
-            article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
-            
-            if article:
-                # Grab raw text and feed it to the parser
-                raw_text = article.get_text(separator=" ", strip=True)
-                parsed = parse_workout_data(raw_text) # Helper now accepts string
-                parsed['id'] = today_id
-                parsed['title'] = f"WOD {today_id}" # Fallback title
-                return parsed
-
-            # DEBUG: Only returns this if BOTH methods fail
-            page_title = soup.title.string.strip() if soup.title else "No Title"
-            return {"error": f"Page found ('{page_title}') but parsers failed."}
-
-        return {"error": f"Connection Failed: Status {response.status_code}"}
-        
-    except Exception as e:
-        return {"error": f"Crash: {str(e)}"}
-
-# --- UI LAYER (UNTOUCHED) ---
-st.set_
+        elif key == "Scaling":
