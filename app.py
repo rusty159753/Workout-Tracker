@@ -5,40 +5,34 @@ import datetime
 import hashlib
 import re
 
-# --- THE SEARCH & RESCUE ENGINE ---
-def execute_pattern_match_scrape():
+def execute_final_raw_sync():
     rss_url = "https://www.crossfit.com/feed"
-    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) Safari/604.1"}
+    # RESET HEADERS: Use a basic bot header to prevent the Homepage Redirect
+    headers = {"User-Agent": "WOD-Scraper/1.0"}
     
-    # 2-Day Rolling Window (Today: 251223, Yesterday: 251222)
     today = datetime.date.today()
     target_dates = [today.strftime("%y%m%d"), (today - datetime.timedelta(days=1)).strftime("%y%m%d")]
     
     try:
         response = requests.get(rss_url, headers=headers, timeout=20)
-        raw_text = response.text  # Get the raw string to bypass XML parsing errors
+        # Verify if we actually got XML or still got HTML
+        is_html = response.text.strip().startswith("<!DOCTYPE html")
         
         for date_id in target_dates:
-            # 1. THE SEARCH DOG: Find the date string and grab the nearest link
-            # This regex looks for the date followed by a link or guid tag
-            pattern = rf"<item>.*?{date_id}.*?<(?:link|guid).*?>(.*?)</(?:link|guid)>"
-            match = re.search(pattern, raw_text, re.DOTALL | re.IGNORECASE)
+            # BROAD PATTERN MATCH: Find the date and the very next URL
+            # This works whether it's an RSS <link> or an HTML <a> tag
+            pattern = rf"{date_id}.*?(https?://www\.crossfit\.com/[^\s\"<>]+)"
+            match = re.search(pattern, response.text, re.DOTALL | re.IGNORECASE)
             
             if match:
-                # Clean the found URL of any CDATA or XML leftovers
                 target_link = match.group(1).strip()
-                target_link = re.sub(r'<!\[CDATA\[|\]\]>|<.*?>', '', target_link)
+                # Clean up trailing characters
+                target_link = target_link.split('<')[0].split('"')[0].split(']')[0]
                 
                 if "http" in target_link:
-                    # 2. THE HYDRATION: Scrape the actual website for full content
                     res = requests.get(target_link, headers=headers, timeout=15)
                     page_soup = BeautifulSoup(res.content, 'html.parser')
-                    
-                    # Look for the workout content using semantic fallbacks
-                    content = (
-                        page_soup.find('article') or 
-                        page_soup.find('div', class_=re.compile(r'content|post|entry|wod', re.I))
-                    )
+                    content = page_soup.find('article') or page_soup.find('div', class_=re.compile(r'content|post|entry', re.I))
                     
                     if content:
                         full_text = content.get_text(separator="\n", strip=True)
@@ -46,33 +40,26 @@ def execute_pattern_match_scrape():
                             "title": date_id,
                             "workout": full_text,
                             "url": target_link,
-                            "hash": hashlib.sha256(full_text.encode('utf-8')).hexdigest()
+                            "hash": hashlib.sha256(full_text.encode('utf-8')).hexdigest(),
+                            "type": "HTML" if is_html else "XML"
                         }
         
-        # If nothing found, return a debug snippet for the sidebar
-        return {"debug_raw": raw_text[:500]}
-        
+        return {"debug": response.text[:1000]} # Send more text for debugging
     except Exception as e:
         return {"error": str(e)}
 
-# --- UI LAYER ---
-st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
+# --- UI ---
 st.title("TRI⚡DRIVE")
+wod = execute_final_raw_sync()
 
-wod_result = execute_pattern_match_scrape()
-
-if isinstance(wod_result, dict) and "workout" in wod_result:
-    st.subheader(f"WOD: {wod_result['title']}")
-    st.code(wod_result['workout'], language=None)
-    st.sidebar.success("Status: Pattern Match Success")
-    st.sidebar.markdown(f"[Source URL]({wod_result['url']})")
-    st.sidebar.info(f"Integrity: {wod_result['hash'][:12]}")
+if isinstance(wod, dict) and "workout" in wod:
+    st.subheader(f"WOD: {wod['title']}")
+    st.code(wod['workout'], language=None)
+    st.sidebar.success(f"Source Type: {wod['type']}")
+    st.sidebar.markdown(f"[Source URL]({wod['url']})")
 else:
-    st.error("Verified 2025 WOD not found in raw stream.")
-    if "debug_raw" in wod_result:
+    st.error("Target data not found in the current stream.")
+    if "debug" in wod:
         with st.expander("Diagnostic Telemetry"):
-            st.write("Raw Feed Sample (First 500 chars):")
-            st.text(wod_result["debug_raw"])
-    if st.button("Force Deep Sync"):
-        st.rerun()
+            st.text(wod["debug"])
         
