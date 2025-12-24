@@ -142,59 +142,204 @@ def parse_workout_data(wod_data):
     for i, item in enumerate(indices):
         key = item['key']
         start = item['end']
-        end = indices[i+1]['start
-  st.warning("⚠️ Phase 3 Pending Authorization")
-            
-            if st.button("⬅️ Abort & Return"):
-                st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
-("⚠️ Phase 3 Pending Authorization")
-            
-            if st.button("⬅️ Abort & Return"):
-                st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
-          st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
-            if st.button("⬅️ Abort & Return"):
-                st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
-formatted_rx}")
-            
-            st.warning("⚠️ Phase 3 Pending Authorization")
-            
-            if st.button("⬅️ Abort & Return"):
-                st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
-formatted_rx}")
-            
-            st.warning("⚠️ Phase 3 Pending Authorization")
-            
-            if st.button("⬅️ Abort & Return"):
-                st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
-              with st.expander("Coaching Cues"):
-                        st.markdown(wod['cues'].replace("\n", "  \n"))
+        end = indices[i+1]['start'] if (i + 1 < len(indices)) else len(full_blob)
+        content = full_blob[start:end].strip()
+        
+        if key == "Stimulus": parsed['strategy'] = content
+        elif key == "Scaling": parsed['scaling'] = content
+        elif key == "Intermediate": parsed['intermediate'] = content
+        elif key == "Beginner": parsed['beginner'] = content
+        elif key == "Cues": parsed['cues'] = content
 
+    parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
+    return parsed
+
+# --- 8. NETWORK ---
+def fetch_wod_content():
+    local_tz = pytz.timezone("US/Mountain")
+    today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
+    
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+
+    try:
+        url = "https://www.crossfit.com/" + today_id
+        response = scraper.get(url, timeout=15)
+        
+        if response.status_code == 200:
+            response.encoding = 'utf-8' 
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Strategy A: JSON
+            next_data = soup.find('script', id='__NEXT_DATA__')
+            if next_data:
+                try:
+                    json_payload = json.loads(next_data.string)
+                    wod_data = json_payload.get('props', {}).get('pageProps', {}).get('wod', {})
+                    if wod_data:
+                        parsed = parse_workout_data(wod_data)
+                        parsed['id'] = today_id
+                        return parsed
+                except:
+                    pass 
+
+            # Strategy B: HTML Fallback
+            article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
+            if article:
+                parsed = parse_workout_data(str(article))
+                parsed['id'] = today_id
+                parsed['title'] = "WOD " + today_id
+                return parsed
+
+            return {"error": "Parser Mismatch."}
+        return {"error": "HTTP Error " + str(response.status_code)}
+    except Exception as e:
+        return {"error": "Critical Failure: " + str(e)}
+
+# --- 9. UI LAYER ---
+st.title("TRI⚡DRIVE")
+st.markdown("---") 
+
+if not READY_TO_SYNC:
+    st.error("SYSTEM HALTED: Missing Dependencies")
+else:
+    if st.session_state['view_mode'] == 'VIEWER':
+        
+        wod = st.session_state.get('current_wod', {})
+        
+        if not wod or "error" in wod:
+            st.info("📡 Establishing Secure Connection...") 
+            wod = fetch_wod_content()
+            
+            if "error" not in wod:
+                st.session_state['current_wod'] = wod
+                st.rerun() 
+            else:
+                st.error("⚠️ " + str(wod.get('error', 'Unknown Error')))
+                if st.button("🔄 Retry Handshake"):
+                    st.session_state['current_wod'] = {}
+                    st.rerun()
+        else:
+            if "workout" in wod:
+                st.subheader(wod['title'])
+                
+                formatted_workout = wod['workout'].replace("\n", "  \n")
+                st.info(formatted_workout) 
+                
+                if st.button("🚀 IMPORT TO WORKBENCH", use_container_width=True):
+                    st.session_state['view_mode'] = 'WORKBENCH'
+                    st.rerun()
+
+                st.divider()
+                
+                if wod.get('strategy'):
+                    with st.expander("Stimulus & Strategy"):
+                        st.markdown(wod['strategy'].replace("\n", "  \n"))
+                
+                if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
+                    with st.expander("Scaling Options", expanded=False):
+                        tab_rx, tab_int, tab_beg = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+                        
+                        with tab_rx:
+                            c = wod.get('scaling') or "No specific Rx instructions."
+                            st.markdown(c.replace("\n", "  \n"))
+                        with tab_int:
+                            c = wod.get('intermediate') or "No Intermediate option."
+                            st.markdown(c.replace("\n", "  \n"))
+                        with tab_beg:
+                            c = wod.get('beginner') or "No Beginner option."
+                            st.markdown(c.replace("\n", "  \n"))
+
+                if wod.get('cues'):
+                    with st.expander("Coaching Cues"):
+                        st.markdown(wod['cues'].replace("\n", "  \n"))
             else:
                 st.error("Data integrity failure. Perform Hard Reset.")
 
+    # --- PHASE 3: KINETIC PARSER IMPLEMENTATION ---
     elif st.session_state['view_mode'] == 'WORKBENCH':
-        st.caption("🛠️ WORKBENCH ACTIVE")
+        st.caption("🛠️ WORKBENCH ACTIVE // PHASE 3: KINETIC PARSER")
+        
+        # 1. RETRIEVE DATA
         wod = st.session_state.get('current_wod', {})
         
         if not wod:
-            st.error("Memory buffer empty.")
+            st.error("BUFFER UNDERRUN: No WOD Data found.")
             if st.button("Return to Base"):
                 st.session_state['view_mode'] = 'VIEWER'
                 st.rerun()
         else:
-            st.success(f"Loaded: {wod.get('title', 'Unknown')}")
+            # 2. HEADER DISPLAY
+            # Strict Concatenation Enforced
+            title_safe = wod.get('title', 'Unknown Operation')
+            st.success("Target Locked: " + title_safe)
             
-            formatted_rx = wod.get('workout', 'No Data').replace("\n", "  \n")
-            st.markdown(f"**Target Workout:** \n{formatted_rx}")
+            st.divider()
+
+            # 3. THE KINETIC PARSER ENGINE
+            # We take the raw workout text and attempt to structure it
+            raw_workout = wod.get('workout', '')
             
-            st.warning("⚠️ Phase 3 Pending Authorization")
+            # Safety Check: Ensure string
+            if not isinstance(raw_workout, str):
+                raw_workout = str(raw_workout)
+
+            # Split by newlines (The Janitor already ensured clean \n separators)
+            lines = raw_workout.split('\n')
             
-            if st.button("⬅️ Abort & Return"):
-                st.session_state['view_mode'] = 'VIEWER'
-                st.rerun()
+            # PARSING LOOP
+            # We track an index 'idx' to create unique keys for every checkbox
+            st.markdown("### 📋 Mission Checklist")
+            
+            for idx, line in enumerate(lines):
+                line = line.strip()
+                
+                # Skip empty noise
+                if not line:
+                    continue
+                    
+                # HEURISTIC 1: Detect Headers/Schemes
+                # If a line ends in a colon (:) or implies a round structure, it is a header.
+                is_header = False
+                if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+                    is_header = True
+                
+                # HEURISTIC 2: Detect Movements
+                # If it starts with a number (reps) or a bullet point, it is likely a movement.
+                # The Janitor injected "• " for list items, so we look for that.
+                is_movement = False
+                if line.startswith("•") or line[0].isdigit():
+                    is_movement = True
+                
+                # RENDER LOGIC
+                if is_header and not is_movement:
+                    # Render as bold instruction using concatenation
+                    st.markdown("**" + line + "**")
+                
+                elif is_movement:
+                    # Render as Checkbox
+                    # Key generation uses strict unique ID to prevent state collision
+                    # NO F-STRINGS: "chk_" + str(idx)
+                    checkbox_key = "chk_" + str(idx)
+                    
+                    # Clean the bullet for display if present
+                    display_text = line.replace("• ", "").strip()
+                    
+                    st.checkbox(display_text, key=checkbox_key)
+                    
+                else:
+                    # Fallback: Render as standard text note
+                    st.markdown(line)
+
+            st.divider()
+            
+            # 4. NAVIGATION
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("⬅️ Abort & Return"):
+                    st.session_state['view_mode'] = 'VIEWER'
+                    st.rerun()
+            with col2:
+                # Placeholder for Phase 4
+                st.button("💾 Save to Log (Locked)", disabled=True)
+
+# === END OF SYSTEM FILE ===
