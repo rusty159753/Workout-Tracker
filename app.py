@@ -222,7 +222,6 @@ else:
             if "workout" in wod:
                 st.subheader(wod['title'])
                 
-                # Formatted display with Markdown breaks
                 formatted_workout = wod['workout'].replace("\n", "  \n")
                 st.info(formatted_workout) 
                 
@@ -269,11 +268,15 @@ else:
             st.success(f"Loaded: {wod.get('title', 'Unknown')}")
             
             formatted_rx = wod.get('workout', 'No Data').replace("\n", "  \n")
-            # CHANGED: Replaced f-string with concatenation to prevent SyntaxError
+            
+            # --- FIX APPLIED HERE: Concatenation instead of f-string ---
             st.markdown("**Target Workout:** \n" + formatted_rx)
             
             st.warning("⚠️ Phase 3 Pending Authorization")
             
+            if st.button("⬅️ Abort & Return"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
             if st.button("⬅️ Abort & Return"):
                 st.session_state['view_mode'] = 'VIEWER'
                 st.rerun()
