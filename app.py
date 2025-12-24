@@ -71,9 +71,8 @@ def sanitize_text(text):
     for br in soup.find_all("br"):
         br.replace_with("\n")
         
-    # 2. Handle List Items (Crucial for 12 Days of Christmas)
+    # 2. Handle List Items
     for li in soup.find_all("li"):
-        # Add a bullet and a newline to force verticality
         li.insert_before("\n• ")
         li.insert_after("\n")
         
@@ -83,7 +82,6 @@ def sanitize_text(text):
         block.insert_after("\n\n")
 
     # 4. Extract Text with SPACE separator to prevent mashing
-    # separator=" " ensures "walk" and "2" become "walk 2" not "walk2"
     text = soup.get_text(separator=" ", strip=True)
     
     # C. Cleanup & Normalization
@@ -224,7 +222,7 @@ else:
             if "workout" in wod:
                 st.subheader(wod['title'])
                 
-                # Use Markdown Double Space to respect the newlines we added
+                # Formatted display with Markdown breaks
                 formatted_workout = wod['workout'].replace("\n", "  \n")
                 st.info(formatted_workout) 
                 
@@ -271,7 +269,15 @@ else:
             st.success(f"Loaded: {wod.get('title', 'Unknown')}")
             
             formatted_rx = wod.get('workout', 'No Data').replace("\n", "  \n")
-            st.markdown(f"**Target Workout:** \n{formatted_rx}")
+            # CHANGED: Replaced f-string with concatenation to prevent SyntaxError
+            st.markdown("**Target Workout:** \n" + formatted_rx)
+            
+            st.warning("⚠️ Phase 3 Pending Authorization")
+            
+            if st.button("⬅️ Abort & Return"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
+formatted_rx}")
             
             st.warning("⚠️ Phase 3 Pending Authorization")
             
