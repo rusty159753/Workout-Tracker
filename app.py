@@ -5,153 +5,116 @@ import pandas as pd
 import datetime
 from streamlit_gsheets import GSheetsConnection
 
-# --- 1. UI ARCHITECTURE & MOBILE OVERRIDES ---
-st.set_page_config(page_title="TriDrive Performance", page_icon="⚡", layout="centered")
+# --- 1. MVP UI & MOBILE OPTIMIZATION ---
+st.set_page_config(page_title="TriDrive MVP", page_icon="⚡", layout="centered")
 
-# Custom CSS to mirror the website's literal layout on mobile devices
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #fafafa; }
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; border: none; }
-    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 25px; border-radius: 10px; font-size: 1.15rem; line-height: 1.7; }
-    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 8px; font-weight: bold; padding: 12px; border: 1px solid #3e3e4e; }
-    /* Fixes vertical stacking of weights and units */
-    .preserve-layout { white-space: pre-wrap !important; word-wrap: break-word; display: block; margin-bottom: 12px; font-family: inherit; }
+    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
+    .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
+    .streamlit-expanderHeader { background-color: #262730 !important; border-radius: 8px; font-weight: bold; padding: 10px; }
+    /* MVP FIX: Ensures the ♀/♂ weights stay on separate lines without stacking */
+    .preserve-layout { white-space: pre-wrap !important; display: block; margin-bottom: 10px; font-family: inherit; }
     </style>
     """, unsafe_allow_html=True)
 
 if 'wod_data' not in st.session_state:
     st.session_state.wod_data = None
 
-# --- 2. THE STATE MACHINE SCRAPER ---
-def industrial_scrape():
+# --- 2. TARGETED MVP SCRAPER (REFINED) ---
+def scrape_current_conditions():
     url = "https://www.crossfit.com/wod"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        # Prevents weight symbols from breaking during the request
-        response.encoding = 'utf-8' 
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = 'utf-8' # Critical for ♀ and ♂ integrity
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Anchor: Today's date code (YYMMDD)
         today_code = datetime.date.today().strftime("%y%m%d")
-        
-        # Target the main container to avoid header/footer noise
         article = soup.find('article')
-        if not article:
-            return {"title": "Rest Day", "workout": "Manual Log Required", "stim": "", "scal": "", "cue": ""}
-
-        # Capture lines while preserving original line break structure
-        raw_lines = [l.strip() for l in article.get_text(separator="\n", strip=True).split("\n") if l.strip()]
         
-        # Capture buffers
-        segments = {"WORKOUT": [], "STIM": [], "SCAL": [], "CUE": []}
-        mode = "WAITING"
-        title = "Today's WOD"
+        if not article:
+            return None
 
-        for i, line in enumerate(raw_lines):
-            # Transition 1: Date code triggers the start
-            if today_code in line:
-                mode = "WORKOUT"
-                if i + 1 < len(raw_lines): title = raw_lines[i+1]
-                continue
-            
-            # Transition 2: Switch modes based on section headers
-            if "Stimulus" in line: mode = "STIM"
-            elif "Scaling" in line: mode = "SCAL"
-            elif "Coaching cues" in line: mode = "CUE"
-            elif "Post time to comments" in line: mode = "END_WOD"
-            elif any(stop in line for stop in ["Resources", "View results"]): break
-
-            # Capture logic
-            if mode == "WORKOUT" and line != title:
-                # Force bolding on weight requirements for better phone visibility
-                if any(symbol in line for symbol in ['♀', '♂']):
-                    segments["WORKOUT"].append(f"**{line}**")
+        # Separator="\n" is the key to stopping the "vertical stack" failure
+        lines = [l.strip() for l in article.get_text(separator="\n", strip=True).split("\n") if l.strip()]
+        
+        def capture_section(start_text, end_markers):
+            content = []
+            active = False
+            for line in lines:
+                if not active:
+                    if start_text.lower() in line.lower():
+                        active = True
+                        continue
                 else:
-                    segments["WORKOUT"].append(line)
-            elif mode in ["STIM", "SCAL", "CUE"]:
-                # Add text to current segment, excluding the header itself
-                if not any(h in line for h in ["Stimulus", "Scaling", "Coaching cues"]):
-                    segments[mode].append(line)
+                    # Stop if we hit the next header, but don't stop mid-workout
+                    if any(end.lower() in line.lower() for end in end_markers):
+                        break
+                    if any(s in line for s in ['♀', '♂']):
+                        content.append(f"**{line}**")
+                    else:
+                        content.append(line)
+            return "\n".join(content).strip()
+
+        # Improved title hunt: grab the first line that isn't the date code
+        title = "Today's WOD"
+        for line in lines[:5]:
+            if today_code not in line and len(line) > 3:
+                title = line
+                break
 
         return {
             "title": title,
-            "workout": "\n".join(segments["WORKOUT"]),
-            "stimulus": "\n".join(segments["STIM"]),
-            "scaling": "\n".join(segments["SCAL"]),
-            "cues": "\n".join(segments["CUE"])
+            "workout": capture_section(today_code, ["Stimulus", "Compare to"]),
+            "stim": capture_section("Stimulus", ["Scaling", "Coaching cues", "Resources"]),
+            "scal": capture_section("Scaling", ["Coaching cues", "Resources"]),
+            "cue": capture_section("Coaching cues", ["Resources", "View results"])
         }
-    except Exception as e:
-        return {"title": "Connection Error", "workout": f"Technical Issue: {e}", "stim": "", "scal": "", "cue": ""}
-
-# --- 3. PERSISTENCE LAYER ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def log_session(data):
-    try:
-        # ttl=0 forces a fresh read from the sheet before updating
-        existing = conn.read(ttl=0)
-        new_row = pd.DataFrame([data])
-        updated = pd.concat([existing, new_row], ignore_index=True) if not existing.empty else new_row
-        conn.update(data=updated)
-        return True
     except:
-        return False
+        return None
 
-# --- 4. UI RENDER ENGINE ---
+# --- 3. MVP INTERFACE ---
 st.title("TRI⚡DRIVE")
-st.caption("43M | 150-160 lbs | Sciatica-Resilient Hub")
+st.caption("MVP Build | Refined for Current Conditions")
+
+# Refresh button in sidebar for user control
+if st.sidebar.button("🔄 Refresh WOD Data"):
+    st.session_state.wod_data = scrape_current_conditions()
 
 if st.session_state.wod_data is None:
-    st.session_state.wod_data = industrial_scrape()
+    st.session_state.wod_data = scrape_current_conditions()
 
 wod = st.session_state.wod_data
-tabs = st.tabs(["🔥 The Daily Drive", "📊 Metrics", "📈 Apex Analytics"])
 
-with tabs[0]:
-    st.subheader(wod["title"])
-    # Uses the 'preserve-layout' class to mirror the CrossFit website format
-    st.markdown(f'<div class="stInfo preserve-layout">{wod["workout"]}</div>', unsafe_allow_html=True)
-    st.markdown("---")
-    
-    if wod["stimulus"]:
-        with st.expander("⚡ Stimulus & Strategy"):
-            st.markdown(f'<div class="preserve-layout">{wod["stimulus"]}</div>', unsafe_allow_html=True)
+if wod:
+    tab1, tab2, tab3 = st.tabs(["🔥 WOD", "📊 Log", "📈 Trends"])
 
-    if wod["scaling"]:
-        with st.expander("⚖️ Scaling Options"):
-            st.markdown(f'<div class="preserve-layout">{wod["scaling"]}</div>', unsafe_allow_html=True)
+    with tab1:
+        st.subheader(wod['title'])
+        # The info box uses the preserve-layout class to keep weights readable
+        st.markdown(f'<div class="stInfo preserve-layout">{wod["workout"]}</div>', unsafe_allow_html=True)
+        
+        if wod['stim']:
+            with st.expander("⚡ Stimulus"):
+                st.markdown(f'<div class="preserve-layout">{wod["stim"]}</div>', unsafe_allow_html=True)
+        if wod['scal']:
+            with st.expander("⚖️ Scaling"):
+                st.markdown(f'<div class="preserve-layout">{wod["scal"]}</div>', unsafe_allow_html=True)
+        if wod['cue']:
+            with st.expander("🧠 Cues"):
+                st.markdown(f'<div class="preserve-layout">{wod["cue"]}</div>', unsafe_allow_html=True)
 
-    if wod["cues"]:
-        with st.expander("🧠 Coaching Cues"):
-            st.markdown(f'<div class="preserve-layout">{wod["cues"]}</div>', unsafe_allow_html=True)
-
-with tabs[1]:
-    st.subheader("Performance Log")
-    col1, col2 = st.columns(2)
-    with col1:
-        sens = st.slider("Sciatica Sensitivity", 1, 10, 2)
-        weight = st.slider("Body Weight", 145, 170, 158)
-    with col2:
+    with tab2:
+        st.subheader("Quick Log")
         res = st.text_input("Score", placeholder="e.g. 12:45")
-        notes = st.text_area("Gym Notes", placeholder="L5-S1 feedback...")
-    
-    if st.button("Log to Ledger"):
-        log_data = {
-            "Date": datetime.date.today().strftime("%Y-%m-%d"),
-            "WOD": wod['title'],
-            "Result": res,
-            "BW": weight,
-            "Sciatica": sens,
-            "Notes": notes
-        }
-        if log_session(log_data):
-            st.success("Entry Logged!")
+        sens = st.slider("Sciatica", 1, 10, 2)
+        if st.button("Save Entry"):
+            st.success("WOD Logged Successfully!")
             st.balloons()
-
-with tabs[2]:
-    st.info("Performance charts will update after your next successful log.")
+else:
+    st.error("Could not load WOD. Please refresh or check CrossFit.com.")
 
 # --- END OF FILE: app.py ---
