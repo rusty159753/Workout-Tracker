@@ -13,19 +13,28 @@ try:
 except ImportError:
     HAS_SCRAPER = False
 
-# --- STEP 1: THE JANITOR (Sanitization) ---
+# --- STEP 1: THE JANITOR (Deep Sanitization) ---
 def sanitize_text(text):
     """
-    Scrub the text to remove 'Ghost Spaces' and encoding artifacts.
+    Scrub the text to remove HTML tags, 'Ghost Spaces', and encoding artifacts.
+    This ensures our Regex finds headers like 'Stimulus' even if they are bolded or formatted.
     """
     if not text:
         return ""
-    # Normalize unicode to handle special characters
+    
+    # 1. Strip HTML Tags (Crucial for clean regex matching)
+    # We use BeautifulSoup to turn "<p>Stimulus...</p>" into "Stimulus..."
+    text = BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True)
+
+    # 2. Normalize Unicode
     text = unicodedata.normalize("NFKD", text)
-    # Replace non-breaking spaces with standard spaces
+    
+    # 3. Fix Invisible Spaces
     text = text.replace('\xa0', ' ')
-    # Collapse multiple spaces
+    
+    # 4. Collapse Whitespace
     text = re.sub(r'\s+', ' ', text).strip()
+    
     return text
 
 # --- STEP 2: THE MAPPER (Positional Parsing) ---
@@ -36,7 +45,7 @@ def parse_workout_data(wod_data):
     raw_main = wod_data.get('main_text', '')
     raw_stim = wod_data.get('stimulus', '')
     
-    # Sanitize the full blob immediately
+    # Sanitize the full blob immediately (Now strips HTML too)
     full_blob = sanitize_text(raw_main + " " + raw_stim)
 
     # Define the headers we are hunting for
@@ -97,18 +106,15 @@ def parse_workout_data(wod_data):
     parsed['title'] = wod_data.get('title', 'Workout of the Day')
     return parsed
 
-# --- STEP 3: THE CLOUDSCRAPER ENGINE (Preserved) ---
+# --- STEP 3: THE CLOUDSCRAPER ENGINE ---
 def execute_cloud_sync():
     local_tz = pytz.timezone("US/Mountain")
     today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
     
-    # Initialize the scraper (mimics a real Chrome browser)
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
 
     try:
         target_url = f"https://www.crossfit.com/{today_id}"
-        
-        # Use scraper.get instead of requests.get
         response = scraper.get(target_url, timeout=15)
         response.encoding = 'utf-8'
 
@@ -116,21 +122,27 @@ def execute_cloud_sync():
             soup = BeautifulSoup(response.text, 'html.parser')
             next_data = soup.find('script', id='__NEXT_DATA__')
             
+            # ATTEMPT 1: Clean JSON Extraction
             if next_data:
                 data = json.loads(next_data.string)
                 wod_data = data.get('props', {}).get('pageProps', {}).get('wod', {})
                 if wod_data:
-                    # Pass data to the Mapper
                     parsed = parse_workout_data(wod_data)
                     parsed['id'] = today_id
                     parsed['url'] = target_url
                     return parsed
 
-            # HTML Fallback (Last resort)
+            # ATTEMPT 2: HTML Fallback (Now Routed Through Mapper)
             article = soup.find('article') or soup.find('main')
             if article:
-                raw = sanitize_text(article.get_text(separator="\n", strip=True))
-                return {"workout": raw, "title": f"WOD {today_id}", "url": target_url, "id": today_id}
+                # We create a fake "wod_data" object so the Mapper can slice it
+                raw_text = article.get_text(separator=" ", strip=True)
+                fake_wod_data = {"title": f"WOD {today_id}", "main_text": raw_text}
+                
+                parsed = parse_workout_data(fake_wod_data)
+                parsed['id'] = today_id
+                parsed['url'] = target_url
+                return parsed
 
         return {"error": f"Cloudflare Blocked Access (Status {response.status_code})"}
     except Exception as e:
