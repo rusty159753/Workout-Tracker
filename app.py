@@ -1,4 +1,4 @@
-# --- VERSION 6.4: SCORCHED EARTH (NO F-STRINGS) ---
+# --- VERSION 7.0: THE MANAGER'S FIX (INDENTATION CORRECTED) ---
 import streamlit as st
 import datetime
 import pytz
@@ -275,6 +275,11 @@ else:
             st.markdown("**Target Workout:** \n" + safe_rx_display)
             
             st.warning("⚠️ Phase 3 Pending Authorization")
+            
+            if st.button("⬅️ Abort & Return"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
+("⚠️ Phase 3 Pending Authorization")
             
             if st.button("⬅️ Abort & Return"):
                 st.session_state['view_mode'] = 'VIEWER'
