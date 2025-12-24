@@ -285,3 +285,21 @@ else:
             if st.button("⬅️ Back to Viewer"):
                 st.session_state['view_mode'] = 'VIEWER'
                 st.rerun()
+tate.get('current_wod', {})
+        
+        if not wod:
+            st.error("No WOD loaded.")
+            if st.button("Back"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
+        else:
+            st.success(f"Imported: {wod.get('title', 'Unknown')}")
+            
+            formatted_rx = wod.get('workout', 'No Data').replace("\n", "  \n")
+            st.markdown(f"**Rx Workout:** \n{formatted_rx}")
+            
+            st.warning("⚠️ Phase 3 Construction Zone")
+            
+            if st.button("⬅️ Back to Viewer"):
+                st.session_state['view_mode'] = 'VIEWER'
+                st.rerun()
