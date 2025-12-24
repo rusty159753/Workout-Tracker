@@ -1,112 +1,90 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 import datetime
-from streamlit_gsheets import GSheetsConnection
 
-# --- 1. INDUSTRIAL UI ---
-st.set_page_config(page_title="TriDrive MVP", page_icon="⚡", layout="centered")
-
+# --- UI & Mobile CSS Configuration ---
+st.set_page_config(page_title="TriDrive Performance", layout="centered")
 st.markdown("""
     <style>
     .main { background-color: #0e1117; color: #fafafa; }
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #ff4b4b; color: white; font-weight: bold; }
     .stInfo { background-color: #1e1e26; border-left: 5px solid #ff4b4b; padding: 20px; border-radius: 10px; font-size: 1.1rem; line-height: 1.6; }
-    /* EFFICACY FIX: Preserves line breaks for weights and symbols */
-    .preserve-layout { white-space: pre-wrap !important; display: block; margin-bottom: 10px; font-family: inherit; }
+    /* PRESERVE-LAYOUT: Forces the browser to respect \n characters from the scrape */
+    .preserve-layout { white-space: pre-wrap !important; display: block; margin-bottom: 12px; font-family: inherit; }
     </style>
     """, unsafe_allow_html=True)
 
-if 'wod_data' not in st.session_state:
-    st.session_state.wod_data = None
-
-# --- 2. RESILIENT COMMUNICATION SCRAPER ---
-def scrape_with_retry():
+def execute_structured_scrape():
     url = "https://www.crossfit.com/wod"
-    # Browser-mimicry headers to prevent site blocks
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
-        # Step 1: Open Communication
         response = requests.get(url, headers=headers, timeout=15)
-        response.encoding = 'utf-8' # Critical for symbol rendering
-        
-        # Step 2: Validate Data Structure
+        response.encoding = 'utf-8' # Ensures ♀ and ♂ symbols render correctly
         soup = BeautifulSoup(response.content, 'html.parser')
-        article = soup.find('article') or soup.find('div', class_='content')
+        
+        # Scoping the scrape to the main 'article' tag to isolate content
+        article = soup.find('article')
         if not article: return None
 
-        # Step 3: Literal Line Extraction
+        # separator="\n" preserves the vertical alignment of the weight requirements
         lines = [l.strip() for l in article.get_text(separator="\n", strip=True).split("\n") if l.strip()]
         
-        today_code = datetime.date.today().strftime("%y%m%d")
-        data = {"title": "Isabel", "workout": [], "stim": [], "scal": [], "cue": []}
-        mode = "WAITING"
+        # Data containers and logic variables
+        data = {"title": "Isabel", "workout_lines": [], "stimulus_lines": [], "scaling_lines": []}
+        current_section = "HEAD" 
 
-        for i, line in enumerate(lines):
-            # Anchor Detection
-            if today_code in line:
-                mode = "WORKOUT"
-                if i + 1 < len(lines): data["title"] = lines[i+1]
+        for line in lines:
+            # Transitions: Identifying headers to change the current_section variable
+            if "Stimulus" in line:
+                current_section = "STIMULUS"
                 continue
-            if "Stimulus" in line: mode = "STIM"
-            elif "Scaling" in line: mode = "SCAL"
-            elif "Coaching cues" in line: mode = "CUE"
+            elif "Scaling" in line:
+                current_section = "SCALING"
+                continue
+            elif any(stop in line for stop in ["Resources", "View results"]):
+                break
             
-            # Stop Conditions
-            if any(stop in line for stop in ["Resources", "View results"]): break
-
-            # Contextual Capture
-            if mode == "WORKOUT":
-                if line != data["title"] and today_code not in line:
+            # Content Assignment based on current_section variable
+            if current_section == "HEAD":
+                # Capturing movements (e.g., 30 Snatches) and weight requirements
+                if "Workout of the Day" not in line and not line.isdigit():
                     if any(s in line for s in ['♀', '♂']):
-                        data["workout"].append(f"**{line}**")
+                        data["workout_lines"].append(f"**{line}**")
                     else:
-                        data["workout"].append(line)
-            elif mode in ["STIM", "SCAL", "CUE"]:
-                if not any(h in line for h in ["Stimulus", "Scaling", "Coaching cues"]):
-                    data[mode.lower()].append(line)
+                        data["workout_lines"].append(line)
+            elif current_section == "STIMULUS":
+                data["stimulus_lines"].append(line)
+            elif current_section == "SCALING":
+                data["scaling_lines"].append(line)
 
         return {
-            "title": data["title"],
-            "workout": "\n".join(data["workout"]),
-            "stimulus": "\n\n".join(data["stim"]), # Preserves paragraph spacing
-            "scaling": "\n\n".join(data["scal"]),
-            "cues": "\n".join(data["cue"])
+            "title": data["workout_lines"][0] if data["workout_lines"] else "Isabel",
+            "workout": "\n".join(data["workout_lines"][1:]) if len(data["workout_lines"]) > 1 else "\n".join(data["workout_lines"]),
+            "stimulus": "\n\n".join(data["stimulus_lines"]),
+            "scaling": "\n\n".join(data["scaling_lines"])
         }
     except:
         return None
 
-# --- 3. UI & PERSISTENCE ---
+# --- UI Execution ---
 st.title("TRI⚡DRIVE")
-st.caption("Owner Audit: Communication-Resilient Build")
+st.caption("Industrial Scrape Engine | Date: 2025.12.23")
 
-# Manual Override in Sidebar
-if st.sidebar.button("Force Scrape Refresh"):
-    st.session_state.wod_data = scrape_with_retry()
-
-if st.session_state.wod_data is None:
-    st.session_state.wod_data = scrape_with_retry()
+if 'wod_data' not in st.session_state or st.sidebar.button("Refresh Scrape"):
+    st.session_state.wod_data = execute_structured_scrape()
 
 wod = st.session_state.wod_data
 
 if wod:
-    tab1, tab2, tab3 = st.tabs(["🔥 WOD", "📊 Log", "📈 Analytics"])
-    with tab1:
-        st.subheader(wod['title'])
-        st.markdown(f'<div class="stInfo preserve-layout">{wod["workout"]}</div>', unsafe_allow_html=True)
+    st.subheader(wod['title'])
+    st.markdown(f'<div class="stInfo preserve-layout">{wod["workout"]}</div>', unsafe_allow_html=True)
+    
+    with st.expander("⚡ Stimulus and Strategy"):
+        st.markdown(f'<div class="preserve-layout">{wod["stimulus"]}</div>', unsafe_allow_html=True)
         
-        if wod['stimulus']:
-            with st.expander("⚡ Stimulus & Strategy"):
-                st.markdown(f'<div class="preserve-layout">{wod["stimulus"]}</div>', unsafe_allow_html=True)
-        if wod['scaling']:
-            with st.expander("⚖️ Scaling"):
-                st.markdown(f'<div class="preserve-layout">{wod["scaling"]}</div>', unsafe_allow_html=True)
+    with st.expander("⚖️ Scaling Options"):
+        st.markdown(f'<div class="preserve-layout">{wod["scaling"]}</div>', unsafe_allow_html=True)
 else:
-    st.error("Communication issue with CrossFit.com. Check connection or hit 'Refresh'.")
-
-# --- END OF FILE: app.py ---
+    st.error("Connection error. Ensure Seattle VPN is active and use the Sidebar Refresh.")
+            
