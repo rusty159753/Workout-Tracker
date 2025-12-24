@@ -4,62 +4,67 @@ from bs4 import BeautifulSoup
 import datetime
 import re
 
-def execute_historical_best_logic():
-    # 1. PREDICTIVE URL (SUCCESS FROM MID-CHAT)
+def execute_boundary_validated_scrape():
     now = datetime.date.today()
     target_url = now.strftime("https://www.crossfit.com/wod/%Y/%m/%d")
-    
-    # 2. GOOGLEBOT HEADERS (SUCCESS FROM FIRST BYPASS)
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
     
     try:
         response = requests.get(target_url, headers=headers, timeout=15)
         if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 3. GREEDY ARTICLE EXTRACTION (THE ONLY WAY WE SAW ISABEL)
-            # We target the largest content container, then clean it.
-            main_content = soup.find('article') or soup.find('main') or soup.find('div', id='main-content')
+            # 1. REMOVE GLOBAL SITE NOISE
+            for noise in soup(["nav", "footer", "header", "script", "style"]):
+                noise.decompose()
+
+            # 2. DEFINE OUR BOUNDARY MARKERS
+            # Today's date (251223) and the universal CTA
+            date_anchor = now.strftime("%y%m%d")
+            cta_pattern = r"Post\s+.*?\s+to\s+comments"
             
-            if main_content:
-                # 4. BLACKLIST CLEANING (LEARNED FROM THE NAVIGATION JUNK FAILURE)
-                for junk in main_content(["nav", "header", "footer", "aside", "ul", "li", "script", "style"]):
-                    junk.decompose()
+            # Get the full text stream of the page
+            page_text = soup.get_text(separator="\n", strip=True)
+            
+            # 3. BOUNDARY LOCKING
+            # Find where the date appears (The Start)
+            start_idx = page_text.find(date_anchor)
+            
+            if start_idx != -1:
+                # Find the CTA after the date (The End)
+                cta_match = re.search(cta_pattern, page_text[start_idx:], re.IGNORECASE)
                 
-                # Extract text with preserved spacing
-                lines = main_content.get_text(separator="\n", strip=True).split("\n")
-                
-                # 5. DENSITY FILTER (LEARNED FROM THE 'REST DAY' ERROR)
-                # We keep lines that are descriptive or have workout data.
-                final_lines = []
-                blacklist_keywords = ["gym", "store", "about", "media", "games", "login", "privacy"]
-                
-                for line in lines:
-                    low_line = line.lower().strip()
-                    # Skip if it's too short or contains menu junk
-                    if len(low_line) < 3 or any(word in low_line for word in blacklist_keywords):
-                        continue
-                    final_lines.append(line)
-                
-                if final_lines:
+                if cta_match:
+                    # Calculate end position relative to the start_idx
+                    end_idx = start_idx + cta_match.end()
+                    
+                    # EXTRACT THE VALIDATED WORKOUT
+                    raw_wod = page_text[start_idx:end_idx].strip()
+                    
+                    # Final cleanup of any stray menu fragments that snuck in
+                    clean_wod = re.sub(r'Log In|Create an account|View Profile', '', raw_wod)
+                    
                     return {
-                        "workout": "\n".join(final_lines),
-                        "url": target_url
+                        "workout": clean_wod,
+                        "url": target_url,
+                        "validated": True
                     }
-        return {"error": f"Server Response: {response.status_code}"}
+        
+        return {"error": f"Status {response.status_code}"}
     except Exception as e:
         return {"error": str(e)}
 
 # --- UI LAYER ---
 st.title("TRI⚡DRIVE")
 
-wod = execute_historical_best_logic()
+wod = execute_boundary_validated_scrape()
 
 if wod and "workout" in wod:
     st.subheader(f"WOD {datetime.date.today().strftime('%y%m%d')}")
-    # Using st.info creates the 'clean card' look you wanted
+    # Display the validated block
     st.info(wod['workout'])
-    st.sidebar.success("Historical Pattern: Active")
+    st.sidebar.success("Validators: Date & CTA Matched")
 else:
-    st.error("Problem Solver: Integrated Logic failed to isolate 'Isabel'.")
+    st.error("Boundary Failure: Date or 'Post to comments' CTA not found on page.")
     
