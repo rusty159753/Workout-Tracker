@@ -3,84 +3,93 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
+import datetime
+import pytz
 
-def execute_live_mirror_harvest():
-    # 1. DISCOVERY: Find exactly what CrossFit.com is showing right now
-    homepage_url = "https://www.crossfit.com"
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+def execute_final_hardened_sync():
+    # 1. TIMEZONE ALIGNMENT: Lock to Boise time to prevent '251224' future-leak
+    local_tz = pytz.timezone("US/Mountain")
+    now = datetime.datetime.now(local_tz)
+    today_id = now.strftime("%y%m%d")
     
-    try:
-        # Get the homepage source
-        home_res = requests.get(homepage_url, headers=headers, timeout=10)
-        home_soup = BeautifulSoup(home_res.text, 'html.parser')
-        
-        # Identify the FIRST workout ID link on the page
-        latest_path = None
-        for a in home_soup.find_all('a', href=True):
-            # Look for the 6-digit ID pattern anywhere in the link
-            match = re.search(r'(\d{6})', a['href'])
-            if match:
-                latest_path = a['href']
-                break
-        
-        if not latest_path:
-            return {"error": "Could not identify the live workout on the homepage."}
+    # Headers to bypass 'Shell' and 'Cookie' barriers
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5"
+    }
 
-        # 2. TARGETING: Navigate to that live URL
-        target_url = f"https://www.crossfit.com{latest_path}" if latest_path.startswith('/') else latest_path
-        page_res = requests.get(target_url, headers=headers, timeout=15)
-        page_res.encoding = 'utf-8'
-        page_soup = BeautifulSoup(page_res.text, 'html.parser')
+    try:
+        # 2. TARGETED DISCOVERY: We try the 'Today' ID directly first (Agnostic & Fast)
+        target_url = f"https://www.crossfit.com/{today_id}"
+        response = requests.get(target_url, headers=headers, timeout=15)
         
-        # 3. EXTRACTION: Pull the JSON 'Brain' (Final Content)
-        next_data = page_soup.find('script', id='__NEXT_DATA__')
-        if next_data:
-            data = json.loads(next_data.string)
-            wod_data = data.get('props', {}).get('pageProps', {}).get('wod', {})
+        # If the direct ID isn't live, we fall back to Homepage Discovery
+        if response.status_code != 200:
+            home_res = requests.get("https://www.crossfit.com", headers=headers, timeout=10)
+            # Find the FIRST 6-digit ID on the homepage to see what is currently live
+            match = re.search(r'(\d{6})', home_res.text)
+            if match:
+                today_id = match.group(1)
+                target_url = f"https://www.crossfit.com/{today_id}"
+                response = requests.get(target_url, headers=headers, timeout=15)
+
+        if response.status_code == 200:
+            response.encoding = 'utf-8'
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            if wod_data:
+            # 3. EXTRACTION: THE JSON BRAIN (NEXT.JS DATA SHELL)
+            next_data = soup.find('script', id='__NEXT_DATA__')
+            if next_data:
+                data = json.loads(next_data.string)
+                # Precision Path: pageProps -> wod
+                wod_data = data.get('props', {}).get('pageProps', {}).get('wod', {})
+                
+                if wod_data:
+                    title = wod_data.get('title', 'Workout of the Day')
+                    main_text = wod_data.get('main_text', '')
+                    stimulus = wod_data.get('stimulus', '')
+                    
+                    return {
+                        "title": title,
+                        "content": f"{main_text}\n\n**Stimulus & Strategy:**\n{stimulus}" if stimulus else main_text,
+                        "url": target_url,
+                        "id": today_id
+                    }
+
+            # 4. FINAL FAILSAFE: GREEDY BODY HARVEST
+            # If JSON is missing, we pull the physical 'Article' or 'Main' tag
+            article = soup.find('article') or soup.find('main')
+            if article:
                 return {
-                    "title": wod_data.get('title', 'Workout of the Day'),
-                    "main": wod_data.get('main_text', ''),
-                    "stimulus": wod_data.get('stimulus', ''),
+                    "title": f"WOD {today_id}",
+                    "content": article.get_text(separator="\n", strip=True),
                     "url": target_url,
-                    "id": re.search(r'(\d{6})', target_url).group(1)
+                    "id": today_id
                 }
 
-        # FALLBACK: If JSON fails, harvest the Article text
-        article = page_soup.find('article') or page_soup.find('main')
-        if article:
-            return {
-                "title": "WOD (Live Harvest)",
-                "main": article.get_text(separator="\n", strip=True),
-                "url": target_url,
-                "id": "Live"
-            }
-
+        return {"error": f"Site unreachable (Status {response.status_code})"}
+        
     except Exception as e:
-        return {"error": str(e)}
-    return {"error": "Could not sync with the live homepage."}
+        return {"error": f"Critical Audit Failure: {str(e)}"}
 
 # --- UI LAYER ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 st.title("TRI⚡DRIVE")
 
-with st.spinner("Syncing with live CrossFit.com feed..."):
-    wod = execute_live_mirror_harvest()
+# Execute the audited logic
+with st.spinner("Locking on to live WOD..."):
+    wod = execute_final_hardened_sync()
 
-if wod and "main" in wod:
-    # Display the current live WOD
+if wod and "content" in wod:
     st.subheader(wod['title'])
     
-    # Symbols cleaned for the Pixel display
-    clean_main = wod['main'].replace('♂', '(M)').replace('♀', '(F)')
-    st.info(clean_main)
+    # Clean the Rx symbols for the Pixel display
+    final_text = wod['content'].replace('♂', '(M)').replace('♀', '(F)')
+    st.info(final_text)
     
-    if wod.get('stimulus'):
-        with st.expander("Stimulus & Strategy"):
-            st.write(wod['stimulus'].replace('♂', '(M)').replace('♀', '(F)'))
-            
-    st.sidebar.success(f"Live Sync: /{wod.get('id', 'Found')}")
-    st.sidebar.markdown(f"[Source Page]({wod['url']})")
+    st.sidebar.success(f"Status: Live-Sync /{wod.get('id')}")
+    st.sidebar.markdown(f"[Verify on CrossFit.com]({wod['url']})")
 else:
-    st.error(f"Sync Failure: {wod.get('error')}")
+    st.error(f"Logic Failure: {wod.get('error')}")
+                    
