@@ -5,128 +5,41 @@ import json
 import re
 import datetime
 import pytz
+import unicodedata
 
-# --- CORE LOGIC: THE DEEP LINGUISTIC SLICER ---
-def parse_workout_data(wod_data):
-    """
-    Slices the raw JSON content into interactive buckets.
-    Handles the case where HQ stuffs everything into 'main_text'.
-    """
-    # 1. RAW INPUTS
-    title = wod_data.get('title', 'Workout of the Day')
-    # Combine main and stimulus just in case, to ensure we catch everything
-    raw_blob = wod_data.get('main_text', '') + " " + wod_data.get('stimulus', '')
-
-    # 2. DEFINE MARKERS (The "Grammar of CrossFit")
-    # We look for these headers to chop the string into blocks
-    markers = {
-        "stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
-        "scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
-        "cues": re.compile(r"(Coaching\s+cues|Coaching\s+Tips):", re.IGNORECASE),
-        "resources": re.compile(r"(Resources):", re.IGNORECASE)
-    }
-
-    # 3. SLICE & DICE
-    # We iterate through the blob and extract sections based on the markers.
+# --- THE JANITOR (Sanitization Function) ---
+def sanitize_text(text):
+    if not text:
+        return ""
     
-    # A. Extract Resources (to strip them from the end)
-    resources_text = None
-    res_match = markers['resources'].search(raw_blob)
-    if res_match:
-        resources_text = raw_blob[res_match.end():].strip()
-        raw_blob = raw_blob[:res_match.start()].strip() # Remove resources from the blob
+    # 1. Normalize Unicode (Fixes encoding artifacts like â□□)
+    # NFKD form decomposes characters into their base components
+    text = unicodedata.normalize("NFKD", text)
+    
+    # 2. HARD REPLACE: Turn non-breaking spaces (\xa0) into real spaces
+    # This is critical for our regex to work later
+    text = text.replace('\xa0', ' ')
+    
+    # 3. Collapse multiple spaces into one clean space
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    return text
 
-    # B. Extract Coaching Cues
-    cues_text = None
-    cues_match = markers['cues'].search(raw_blob)
-    if cues_match:
-        cues_text = raw_blob[cues_match.end():].strip()
-        raw_blob = raw_blob[:cues_match.start()].strip() # Remove cues from the blob
-
-    # C. Extract Scaling
-    scaling_text = None
-    intermediate_text = None
-    beginner_text = None
-    scale_match = markers['scaling'].search(raw_blob)
-    if scale_match:
-        full_scaling_block = raw_blob[scale_match.end():].strip()
-        raw_blob = raw_blob[:scale_match.start()].strip() # Remove scaling from the blob
-
-        # Parse Levels inside Scaling
-        inter_match = re.search(r"Intermediate\s+option:", full_scaling_block, re.IGNORECASE)
-        begin_match = re.search(r"Beginner\s+option:", full_scaling_block, re.IGNORECASE)
-
-        if inter_match:
-            scaling_text = full_scaling_block[:inter_match.start()].strip()
-            if begin_match and begin_match.start() > inter_match.start():
-                intermediate_text = full_scaling_block[inter_match.start():begin_match.start()].strip()
-                beginner_text = full_scaling_block[begin_match.start():].strip()
-            else:
-                intermediate_text = full_scaling_block[inter_match.start():].strip()
-        elif begin_match:
-            scaling_text = full_scaling_block[:begin_match.start()].strip()
-            beginner_text = full_scaling_block[begin_match.start():].strip()
-        else:
-            scaling_text = full_scaling_block
-
-    # D. Extract Stimulus
-    strategy_text = None
-    stim_match = markers['stimulus'].search(raw_blob)
-    if stim_match:
-        strategy_text = raw_blob[stim_match.end():].strip()
-        raw_blob = raw_blob[:stim_match.start()].strip() # Remove stimulus from blob
-
-    # E. The Remainder is the WORKOUT
-    # We clean up the "Post to comments" junk at the end of the workout text
-    clean_workout = raw_blob
-    history_ref = None
-    split_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+score\s+to\s+comments|Post\s+to\s+comments)", raw_blob, re.IGNORECASE)
-    if split_match:
-        clean_workout = raw_blob[:split_match.start()].strip()
-        junk_text = raw_blob[split_match.end():]
-        # Look for History in the junk
-        history_match = re.search(r"Compare\s+to\s+(\d{6})", junk_text)
-        if history_match:
-            history_ref = history_match.group(1)
-
-    return {
-        "title": title,
-        "workout": clean_workout,
-        "history": history_ref,
-        "strategy": strategy_text,
-        "scaling": scaling_text,
-        "intermediate": intermediate_text,
-        "beginner": beginner_text,
-        "cues": cues_text,
-        "resources": resources_text
-    }
-
-# --- EXECUTION ENGINE: MIRROR SYNC ---
-def execute_parsed_sync():
+def execute_sanitization_test():
+    # Standard setup
     local_tz = pytz.timezone("US/Mountain")
     today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
+    target_url = f"https://www.crossfit.com/{today_id}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     try:
-        # Discovery: Try Direct ID first
-        target_url = f"https://www.crossfit.com/{today_id}"
         response = requests.get(target_url, headers=headers, timeout=15)
-        response.encoding = 'utf-8' # *** CRITICAL ENCODING FIX ***
-
-        if response.status_code != 200:
-            # Fallback Discovery
-            home_res = requests.get("https://www.crossfit.com", headers=headers, timeout=10)
-            home_res.encoding = 'utf-8'
-            
-            match = re.search(r'(\d{6})', home_res.text)
-            if match:
-                today_id = match.group(1)
-                target_url = f"https://www.crossfit.com/{today_id}"
-                response = requests.get(target_url, headers=headers, timeout=15)
-                response.encoding = 'utf-8'
+        
+        # *** STEP 1: FORCE ENCODING ***
+        response.encoding = 'utf-8'
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -137,77 +50,64 @@ def execute_parsed_sync():
                 wod_data = data.get('props', {}).get('pageProps', {}).get('wod', {})
                 
                 if wod_data:
-                    parsed_content = parse_workout_data(wod_data)
-                    parsed_content['url'] = target_url
-                    parsed_content['id'] = today_id
-                    return parsed_content
+                    # Capture the RAW blob (Dirty)
+                    raw_main = wod_data.get('main_text', '')
+                    raw_stim = wod_data.get('stimulus', '')
+                    full_raw_blob = raw_main + " " + raw_stim
+                    
+                    # Run the JANITOR (Clean)
+                    clean_blob = sanitize_text(full_raw_blob)
+                    
+                    return {
+                        "status": "success",
+                        "raw": full_raw_blob,
+                        "clean": clean_blob,
+                        "id": today_id
+                    }
 
-            # HTML Fallback
-            article = soup.find('article') or soup.find('main')
-            if article:
-                return {
-                    "title": f"WOD {today_id}",
-                    "workout": article.get_text(separator="\n", strip=True),
-                    "url": target_url,
-                    "id": today_id
-                }
+        return {"status": "error", "message": f"Could not fetch WOD (Status {response.status_code})"}
 
-        return {"error": f"Site unreachable (Status {response.status_code})"}
-        
     except Exception as e:
-        return {"error": f"Parsing Failure: {str(e)}"}
+        return {"status": "error", "message": str(e)}
 
-# --- UI LAYER ---
-st.set_page_config(page_title="TRI DRIVE", page_icon="⚡", layout="centered")
-st.title("TRI⚡DRIVE")
+# --- UI LAYER (Diagnostic Mode) ---
+st.set_page_config(page_title="TRI DRIVE: Janitor Mode", page_icon="🧹")
+st.title("🧹 Sanitization Diagnostic")
 
-with st.spinner("Syncing Live Feed..."):
-    wod = execute_parsed_sync()
-
-if wod and "workout" in wod:
-    # 1. THE HERO (Always Visible)
-    st.subheader(wod['title'])
-    clean_workout = wod['workout'].replace('♂', '(M)').replace('♀', '(F)')
-    st.info(clean_workout)
+if st.button("Run Sanity Check"):
+    with st.spinner("Fetching and scrubbing data..."):
+        result = execute_sanitization_test()
     
-    if wod.get('history'):
-        st.caption(f"📅 Compare to: {wod['history']}")
+    if result['status'] == 'success':
+        # 1. GHOST HUNTING
+        # Count invisible characters in the RAW text
+        ghost_count = result['raw'].count('\xa0')
+        
+        st.success(f"Connection Successful: /{result['id']}")
+        
+        # 2. THE REPORT CARD
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Ghost Spaces Found", ghost_count)
+        with col2:
+            st.metric("Encoding Verified", "UTF-8")
 
-    # 2. STIMULUS (Hidden by Default)
-    if wod.get('strategy'):
-        with st.expander("Stimulus & Strategy", expanded=False):
-            st.write(wod['strategy'].replace('♂', '(M)').replace('♀', '(F)'))
+        st.divider()
 
-    # 3. SCALING (Hidden by Default -> Tabs)
-    # Check if we have any scaling content
-    has_scaling = any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')])
-    
-    if has_scaling:
-        with st.expander("Scaling & Modifications", expanded=False):
-            # Dynamic Tabs
-            tabs = []
-            tab_names = []
-            if wod.get('scaling'): tab_names.append("Rx Scaling")
-            if wod.get('intermediate'): tab_names.append("Intermediate")
-            if wod.get('beginner'): tab_names.append("Beginner")
-            
-            if tab_names:
-                cols = st.tabs(tab_names)
-                for idx, name in enumerate(tab_names):
-                    content_key = name.lower().split()[0]
-                    if name == "Rx Scaling": content_key = "scaling"
-                    cols[idx].write(wod[content_key].replace('♂', '(M)').replace('♀', '(F)'))
+        # 3. VISUAL COMPARISON
+        st.subheader("Results")
+        
+        st.markdown("### ❌ Raw Data (Potential Garbage)")
+        # We start with a warning if we see the 'â' character usually associated with the error
+        if 'â' in result['raw']:
+            st.error("Detected Encoding Artifacts (â□□) in Raw Data!")
+        else:
+            st.warning("Raw Data Stream")
+        st.code(result['raw'], language=None)
 
-    # 4. COACHING CUES (Hidden by Default)
-    if wod.get('cues'):
-        with st.expander("Coaching Cues", expanded=False):
-            st.write(wod['cues'])
-
-    # Footer
-    st.divider()
-    st.sidebar.success(f"Synced: /{wod.get('id')}")
-    st.sidebar.markdown(f"[View on CrossFit.com]({wod.get('url')})")
-
-else:
-    st.error(f"System Failure: {wod.get('error')}")
-    
+        st.markdown("### ✅ Sanitized Data (Clean English)")
+        st.success("Ready for Parsing")
+        st.info(result['clean'])
+        
+    else:
+        st.error(f"Fetch Failed: {result['message']}")
