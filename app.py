@@ -2,65 +2,66 @@ import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import datetime
-import re
 
-def execute_flexible_wod_extract():
+def execute_flushed_out_scrape():
     now = datetime.date.today()
-    target_url = now.strftime("https://www.crossfit.com/wod/%Y/%m/%d")
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
+    # 1. GENERATE SEARCH WINDOW (Today then Yesterday)
+    dates_to_check = [now, now - datetime.timedelta(days=1)]
     
-    try:
-        response = requests.get(target_url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # 1. DELETE THE TRASH (Menus, Footers, Nav)
-            # This handles the links you saw like "Find a Gym" and "Store"
-            for trash in soup(["nav", "header", "footer", "script", "style", "aside"]):
-                trash.decompose()
-            
-            # 2. FIND THE BODY
-            # We look for the article or the main content area
-            main_content = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|body|wod', re.I))
-            
-            if main_content:
-                # Get every line of text
-                lines = [line.strip() for line in main_content.get_text(separator="\n").split("\n")]
+    # Using Googlebot is non-negotiable for bypassing the HTML Wall
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}
+    
+    for target_date in dates_to_check:
+        url = target_date.strftime("https://www.crossfit.com/wod/%Y/%m/%d")
+        try:
+            response = requests.get(url, headers=headers, timeout=12)
+            if response.status_code == 200:
+                # 2. VISUAL ANCHOR EXTRACTION
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # Clean out the 'noise' tags identified in previous failures
+                for s in soup(["script", "style", "nav", "footer", "header"]):
+                    s.decompose()
                 
-                # 3. BLACKLIST FILTER ONLY
-                # We only remove known menu items; everything else stays
-                blacklist = ["gym", "store", "course", "about", "media", "games", "login", "account", "privacy", "terms"]
+                page_text = soup.get_text(separator="\n", strip=True)
                 
-                clean_lines = []
-                for line in lines:
-                    if len(line) < 3: continue # Skip empty/short fragments
-                    if any(word in line.lower() for word in blacklist): continue
-                    clean_lines.append(line)
+                # We target the exact anchors from your screenshot (1000003063.png)
+                start_marker = "WORKOUT OF THE DAY"
+                end_marker = "Scaling" # Or "Stimulus"
                 
-                # If we have text, return it
-                if clean_lines:
+                start_idx = page_text.find(start_marker)
+                if start_idx != -1:
+                    end_idx = page_text.find(end_marker, start_idx)
+                    # If end marker missing, grab the next 1200 characters
+                    workout_text = page_text[start_idx:end_idx].strip() if end_idx != -1 else page_text[start_idx:start_idx+1200]
+                    
                     return {
-                        "title": now.strftime("%y%m%d"),
-                        "workout": "\n".join(clean_lines),
-                        "url": target_url
+                        "date": target_date.strftime("%y%m%d"),
+                        "workout": workout_text,
+                        "url": url
                     }
-    except Exception as e:
-        return {"error": str(e)}
+        except Exception:
+            continue # Move to the next date in the window if a crash occurs
+            
     return None
 
 # --- UI LAYER ---
+st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 st.title("TRI⚡DRIVE")
 
-wod = execute_flexible_wod_extract()
+# The status bar now reflects the 'Search Window' logic
+with st.status("Syncing: Scanning 48-Hour WOD Window...", expanded=False) as status:
+    wod = execute_flushed_out_scrape()
+    if wod:
+        status.update(label=f"WOD Found: {wod['date']}", state="complete")
+    else:
+        status.update(label="No WOD found in window.", state="error")
 
-if isinstance(wod, dict) and "workout" in wod:
-    st.subheader(f"WOD: {wod['title']}")
-    # Using a larger text display for the workout
-    st.markdown(f"### {wod['workout']}")
-    st.sidebar.success("Direct Access: Verified")
-    st.sidebar.markdown(f"[Source URL]({wod['url']})")
+if wod:
+    st.subheader(f"WOD {wod['date']}")
+    # Using st.text preserves the '30 snatches' vertical layout
+    st.text(wod['workout'])
+    st.sidebar.success("Direct-Anchor Strategy: Active")
+    st.sidebar.markdown(f"[Source Site]({wod['url']})")
 else:
-    st.warning("Today's page reached, but content is not formatted as a standard WOD. It may be a Rest Day or a Video Feature.")
-    if st.button("Check Previous Day"):
-        # This is a one-click way to see if the scraper works on yesterday's data
-        st.info("Searching for 251222...")
+    st.error("Problem Solvers: Both Predictive and Backup paths have failed. Please check the 'Diagnostic Telemetry'.")
+    
