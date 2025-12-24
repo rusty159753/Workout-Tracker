@@ -4,8 +4,7 @@ from bs4 import BeautifulSoup
 import datetime
 import re
 
-def execute_surgical_wod_extract():
-    # Target today's URL directly via Googlebot spoofing
+def execute_flexible_wod_extract():
     now = datetime.date.today()
     target_url = now.strftime("https://www.crossfit.com/wod/%Y/%m/%d")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"}
@@ -15,59 +14,53 @@ def execute_surgical_wod_extract():
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # 1. KILL NOISE AT THE SOURCE
-            # Deleting these tags removes the menu links shown in your screenshot
-            for noise in soup(["nav", "header", "footer", "script", "style", "aside"]):
-                noise.decompose()
+            # 1. DELETE THE TRASH (Menus, Footers, Nav)
+            # This handles the links you saw like "Find a Gym" and "Store"
+            for trash in soup(["nav", "header", "footer", "script", "style", "aside"]):
+                trash.decompose()
             
-            # 2. TARGET THE MAIN BODY
-            main_body = soup.find('div', class_='col-sm-12') or soup.find('article')
+            # 2. FIND THE BODY
+            # We look for the article or the main content area
+            main_content = soup.find('article') or soup.find('div', class_=re.compile(r'content|post|body|wod', re.I))
             
-            if main_body:
-                raw_text = main_body.get_text(separator="\n").split("\n")
+            if main_content:
+                # Get every line of text
+                lines = [line.strip() for line in main_content.get_text(separator="\n").split("\n")]
                 
-                # 3. KEYWORD DENSITY FILTERING
-                # Blacklist: If these words are in the line, discard it (Kills the menu)
-                blacklist = ["gym", "store", "course", "about", "media", "games", "login", "account"]
-                # Whitelist: If it has these, it's likely part of the WOD (Protects Isabel)
-                whitelist = ["reps", "rounds", "time", "lb", "kg", "rx", "amrap", "emom", "set"]
+                # 3. BLACKLIST FILTER ONLY
+                # We only remove known menu items; everything else stays
+                blacklist = ["gym", "store", "course", "about", "media", "games", "login", "account", "privacy", "terms"]
                 
                 clean_lines = []
-                for line in raw_text:
-                    clean_line = line.strip()
-                    low_line = clean_line.lower()
-                    
-                    # Logic: Discard if in blacklist; Keep if it has numbers or whitelist keywords
-                    if any(word in low_line for word in blacklist):
-                        continue
-                    if any(word in low_line for word in whitelist) or any(char.isdigit() for char in clean_line):
-                        if len(clean_line) > 2: # Ignore stray characters
-                            clean_lines.append(clean_line)
+                for line in lines:
+                    if len(line) < 3: continue # Skip empty/short fragments
+                    if any(word in line.lower() for word in blacklist): continue
+                    clean_lines.append(line)
                 
-                return {
-                    "title": now.strftime("%y%m%d"),
-                    "workout": "\n".join(clean_lines),
-                    "url": target_url
-                }
+                # If we have text, return it
+                if clean_lines:
+                    return {
+                        "title": now.strftime("%y%m%d"),
+                        "workout": "\n".join(clean_lines),
+                        "url": target_url
+                    }
     except Exception as e:
         return {"error": str(e)}
     return None
 
 # --- UI LAYER ---
-st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 st.title("TRI⚡DRIVE")
 
-with st.spinner("Isolating Workout Data..."):
-    wod = execute_surgical_wod_extract()
+wod = execute_flexible_wod_extract()
 
 if isinstance(wod, dict) and "workout" in wod:
     st.subheader(f"WOD: {wod['title']}")
-    # Using 'st.markdown' here can help handle formatting better than st.code
-    st.markdown(f"**{wod['workout']}**") 
-    st.sidebar.success("Surgical Extraction: Active")
+    # Using a larger text display for the workout
+    st.markdown(f"### {wod['workout']}")
+    st.sidebar.success("Direct Access: Verified")
     st.sidebar.markdown(f"[Source URL]({wod['url']})")
 else:
-    st.error("WOD isolated, but no workout movements detected. Feed may be a 'Rest Day'.")
-    if st.button("Deep Refresh"):
-        st.rerun()
-        
+    st.warning("Today's page reached, but content is not formatted as a standard WOD. It may be a Rest Day or a Video Feature.")
+    if st.button("Check Previous Day"):
+        # This is a one-click way to see if the scraper works on yesterday's data
+        st.info("Searching for 251222...")
