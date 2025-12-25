@@ -226,7 +226,7 @@ if st.session_state['wod_in_progress'] and st.session_state['app_mode'] == 'HOME
     st.write("You have an active session in the cache.")
     
     c1, c2 = st.columns(2)
-    # Flattened Buttons
+    # Direct Button Calls (No 'with')
     if c1.button("RESUME WORKOUT", use_container_width=True):
         st.session_state['app_mode'] = 'WORKBENCH'
         st.rerun()
@@ -264,17 +264,87 @@ elif st.session_state['app_mode'] == 'HOME':
             st.rerun()
             
         st.divider()
-        if wod.get('strategy'):
-            with st.expander("🧠 Stimulus & Strategy"):
-                st.markdown(wod['strategy'].replace("\n", "  \n"))
         
+        # Strategy (Flattened)
+        if wod.get('strategy'):
+            strat_exp = st.expander("🧠 Stimulus & Strategy")
+            strat_exp.markdown(wod['strategy'].replace("\n", "  \n"))
+        
+        # Scaling (Flattened Logic)
         if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
-            with st.expander("⚖️ Scaling Options"):
-                # FLATTENED TABS (Fixes Line 341 Error)
-                t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
-                t1.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
-                t2.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
-                t3.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
+            st.caption("⚖️ Scaling Options")
+            # Create Tabs directly
+            t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+            
+            # Direct writes to tabs (No 'with' indentation risk)
+            t1.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
+            t2.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
+            t3.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
+
+        # Cues (Flattened)
+        if wod.get('cues'):
+            cues_exp = st.expander("📢 Coaching Cues")
+            cues_exp.markdown(wod['cues'].replace("\n", "  \n"))
+
+# 3. WORKBENCH
+elif st.session_state['app_mode'] == 'WORKBENCH':
+    st.caption("🏋️ ACTIVE SESSION")
+    wod = st.session_state.get('current_wod', {})
+    title_safe = wod.get('title', 'Unknown WOD')
+    st.success("Target: " + title_safe)
+    
+    raw_workout = str(wod.get('workout', ''))
+    lines = raw_workout.split('\n')
+    
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        is_header = False
+        if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+            is_header = True
+            
+        is_movement = False
+        if line.startswith("•") or line[0].isdigit():
+            is_movement = True
+            
+        if is_header and not is_movement:
+            st.markdown("**" + line + "**")
+        elif is_movement:
+            key_id = "chk_" + str(idx)
+            clean_text = line.replace("• ", "").strip()
+            st.checkbox(clean_text, key=key_id)
+        else:
+            st.markdown(line)
+            
+    st.divider()
+    st.markdown("#### 🏁 Post Score")
+    result_input = st.text_input("Final Time / Load / Score", key="res_input")
+    
+    c1, c2 = st.columns(2)
+    # Direct Button Calls (No 'with')
+    if c1.button("❌ Exit (No Save)"):
+        st.session_state['app_mode'] = 'HOME'
+        st.rerun()
+
+    if c2.button("💾 Log to Whiteboard", type="primary"):
+        if not result_input:
+            st.error("Enter a score to log.")
+        else:
+            st.toast("Syncing to Cloud...")
+            success = push_score_to_sheet(title_safe, result_input)
+            if success:
+                st.success("Score Posted!")
+                st.session_state['wod_in_progress'] = False
+                st.session_state['app_mode'] = 'HOME'
+                st.rerun()
+            else:
+                st.error("Sync Failed.")
+
+# === END OF SYSTEM FILE ===
+\n"))
 
         if wod.get('cues'):
             with st.expander("📢 Coaching Cues"):
