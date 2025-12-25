@@ -79,28 +79,38 @@ def push_score_to_sheet(wod_title, result_text):
 def sanitize_text(text):
     if not text: return ""
     
-    replacements = {"â": "'", "’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."}
+    # Clean smart quotes and weird characters
+    replacements = {
+        "â": "'", "’": "'", "‘": "'", "“": '"', "”": '"', 
+        "–": "-", "—": "-", "…": "..."
+    }
     for bad, good in replacements.items():
         text = text.replace(bad, good)
         
     soup = BeautifulSoup(text, "html.parser")
     
-    for tag in soup.find_all(['br', 'p', 'div', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'tr']):
+    # Add spacing around block elements
+    block_tags = ['br', 'p', 'div', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'tr']
+    for tag in soup.find_all(block_tags):
         tag.insert_before("\n")
         tag.insert_after("\n")
         
+    # Add bullets to list items
     for li in soup.find_all('li'):
         li.insert_before("• ")
 
+    # Extract and normalize text
     text = soup.get_text(separator="\n", strip=True)
     text = unicodedata.normalize("NFKD", text)
     
+    # Final cleanup
     text = text.replace("Resources:", "\n\n**Resources:**\n")
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 # --- 5. CORE LOGIC: PARSER ---
 def parse_workout_data(wod_data):
+    # Handle string vs dictionary input
     if isinstance(wod_data, str):
         full_blob = sanitize_text(wod_data)
         title = "Workout of the Day"
@@ -110,6 +120,7 @@ def parse_workout_data(wod_data):
         full_blob = sanitize_text(raw_main + "\n\n" + raw_stim)
         title = wod_data.get('title', 'Workout of the Day')
 
+    # Define regex patterns for sections
     headers = {
         "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
         "Scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
@@ -118,6 +129,7 @@ def parse_workout_data(wod_data):
         "Cues": re.compile(r"(Coaching\s+cues|Coaching\s+Tips):", re.IGNORECASE)
     }
 
+    # Find section start points
     indices = []
     for key, pattern in headers.items():
         match = pattern.search(full_blob)
@@ -126,23 +138,29 @@ def parse_workout_data(wod_data):
     
     indices.sort(key=lambda x: x['start'])
     
+    # Initialize output dictionary
     parsed = {
         "workout": "", "strategy": "", "scaling": "", 
         "intermediate": "", "beginner": "", "cues": "",
         "title": title
     }
 
+    # Extract the main workout text
     workout_end = indices[0]['start'] if indices else len(full_blob)
     raw_workout = full_blob[:workout_end].strip()
     
-    # Surgical Splitter
-    formatted_workout = re.sub(r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])', '\n', raw_workout)
+    # Surgical Splitter: Fix mashed lines (e.g. "walk 2 reps")
+    split_pattern = r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])'
+    formatted_workout = re.sub(split_pattern, '\n', raw_workout)
     parsed['workout'] = formatted_workout
 
-    footer_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+to\s+comments)", parsed['workout'], re.IGNORECASE)
+    # Remove footer noise
+    footer_pattern = r"(Post\s+time\s+to\s+comments|Post\s+rounds|Post\s+to\s+comments)"
+    footer_match = re.search(footer_pattern, parsed['workout'], re.IGNORECASE)
     if footer_match:
         parsed['workout'] = parsed['workout'][:footer_match.start()].strip()
 
+    # Map remaining sections
     for i, item in enumerate(indices):
         key = item['key']
         start = item['end']
@@ -170,10 +188,12 @@ def fetch_wod_content():
     try:
         url = "https://www.crossfit.com/" + today_id
         response = scraper.get(url, timeout=15)
+        
         if response.status_code == 200:
             response.encoding = 'utf-8' 
             soup = BeautifulSoup(response.text, 'html.parser')
             
+            # Strategy A: JSON Data
             next_data = soup.find('script', id='__NEXT_DATA__')
             if next_data:
                 try:
@@ -185,6 +205,7 @@ def fetch_wod_content():
                         return parsed
                 except: pass 
 
+            # Strategy B: HTML Scrape
             article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
             if article:
                 parsed = parse_workout_data(str(article))
@@ -201,6 +222,7 @@ def fetch_wod_content():
 st.title("TRI⚡DRIVE")
 st.markdown("---") 
 
+# State Management
 if 'app_mode' not in st.session_state:
     st.session_state['app_mode'] = 'HOME'
 if 'current_wod' not in st.session_state:
@@ -208,11 +230,13 @@ if 'current_wod' not in st.session_state:
 if 'wod_in_progress' not in st.session_state:
     st.session_state['wod_in_progress'] = False
 
+# Sidebar
 with st.sidebar:
     st.header("⚙️ Box Settings")
     if st.button("🔄 Force Reset", type="primary"):
         st.session_state.clear()
         st.rerun()
+    
     if SHEETS_AVAILABLE and "gcp_service_account" in st.secrets:
         st.success("Whiteboard: LINKED")
     else:
@@ -225,8 +249,8 @@ if st.session_state['wod_in_progress'] and st.session_state['app_mode'] == 'HOME
     st.warning("⚠️ **UNFINISHED WORKOUT DETECTED**")
     st.write("You have an active session in the cache.")
     
+    # Flattened Button Logic (No Nesting)
     c1, c2 = st.columns(2)
-    # Direct Button Calls (No 'with')
     if c1.button("RESUME WORKOUT", use_container_width=True):
         st.session_state['app_mode'] = 'WORKBENCH'
         st.rerun()
@@ -240,9 +264,11 @@ if st.session_state['wod_in_progress'] and st.session_state['app_mode'] == 'HOME
 elif st.session_state['app_mode'] == 'HOME':
     wod = st.session_state.get('current_wod', {})
     
+    # Fetch Data if missing
     if not wod or "error" in wod:
         st.info("📡 Fetching Programming...") 
         wod = fetch_wod_content()
+        
         if "error" not in wod:
             st.session_state['current_wod'] = wod
             st.rerun() 
@@ -252,6 +278,7 @@ elif st.session_state['app_mode'] == 'HOME':
                 st.session_state['current_wod'] = {}
                 st.rerun()
     else:
+        # Display WOD
         st.subheader(wod.get('title', 'Daily WOD'))
         
         raw_workout = wod.get('workout', 'No Data')
@@ -265,20 +292,98 @@ elif st.session_state['app_mode'] == 'HOME':
             
         st.divider()
         
-        # Strategy (Flattened)
+        # Strategy Section (Flattened)
         if wod.get('strategy'):
             strat_exp = st.expander("🧠 Stimulus & Strategy")
-            strat_exp.markdown(wod['strategy'].replace("\n", "  \n"))
+            strat_txt = wod['strategy'].replace("\n", "  \n")
+            strat_exp.markdown(strat_txt)
         
-        # Scaling (Flattened Logic)
-        if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
+        # Scaling Section (Flattened & Decoupled)
+        has_scaling = any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')])
+        
+        if has_scaling:
             st.caption("⚖️ Scaling Options")
             # Create Tabs directly
             t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
             
-            # Direct writes to tabs (No 'with' indentation risk)
-            t1.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
-            t2.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
+            # Prepare Text Variables (Prevents Line Wrapping Errors)
+            txt_rx = str(wod.get('scaling', '')).replace("\n", "  \n")
+            txt_int = str(wod.get('intermediate', '')).replace("\n", "  \n")
+            txt_beg = str(wod.get('beginner', '')).replace("\n", "  \n")
+            
+            # Render to Tabs
+            t1.markdown(txt_rx)
+            t2.markdown(txt_int)
+            t3.markdown(txt_beg)
+
+        # Cues Section (Flattened)
+        if wod.get('cues'):
+            cues_exp = st.expander("📢 Coaching Cues")
+            cues_txt = wod['cues'].replace("\n", "  \n")
+            cues_exp.markdown(cues_txt)
+
+# 3. WORKBENCH
+elif st.session_state['app_mode'] == 'WORKBENCH':
+    st.caption("🏋️ ACTIVE SESSION")
+    wod = st.session_state.get('current_wod', {})
+    title_safe = wod.get('title', 'Unknown WOD')
+    st.success("Target: " + title_safe)
+    
+    raw_workout = str(wod.get('workout', ''))
+    lines = raw_workout.split('\n')
+    
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        # Header Detection
+        is_header = False
+        if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+            is_header = True
+            
+        # Movement Detection
+        is_movement = False
+        if line.startswith("•") or line[0].isdigit():
+            is_movement = True
+            
+        if is_header and not is_movement:
+            st.markdown("**" + line + "**")
+        elif is_movement:
+            key_id = "chk_" + str(idx)
+            clean_text = line.replace("• ", "").strip()
+            st.checkbox(clean_text, key=key_id)
+        else:
+            st.markdown(line)
+            
+    st.divider()
+    st.markdown("#### 🏁 Post Score")
+    result_input = st.text_input("Final Time / Load / Score", key="res_input")
+    
+    # Flattened Exit/Save Logic
+    c1, c2 = st.columns(2)
+    
+    if c1.button("❌ Exit (No Save)"):
+        st.session_state['app_mode'] = 'HOME'
+        st.rerun()
+
+    if c2.button("💾 Log to Whiteboard", type="primary"):
+        if not result_input:
+            st.error("Enter a score to log.")
+        else:
+            st.toast("Syncing to Cloud...")
+            success = push_score_to_sheet(title_safe, result_input)
+            if success:
+                st.success("Score Posted!")
+                st.session_state['wod_in_progress'] = False
+                st.session_state['app_mode'] = 'HOME'
+                st.rerun()
+            else:
+                st.error("Sync Failed.")
+
+# === END OF SYSTEM FILE ===
+rkdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
             t3.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
 
         # Cues (Flattened)
