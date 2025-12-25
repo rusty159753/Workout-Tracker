@@ -7,7 +7,7 @@ import unicodedata
 import hashlib
 from bs4 import BeautifulSoup
 
-# --- 0. CRITICAL DEPENDENCIES (Try/Except for Safety) ---
+# --- 0. CRITICAL DEPENDENCIES ---
 try:
     import gspread
     from oauth2client.service_account import ServiceAccountCredentials
@@ -24,7 +24,7 @@ except ImportError:
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 
-# --- 2. GLOBAL STYLES (High Contrast & Athlete Focus) ---
+# --- 2. GLOBAL STYLES ---
 st.markdown("""
 <style>
     div[data-testid="stAlert"], div[data-testid="stNotification"] {
@@ -43,14 +43,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. THE WHITEBOARD CONNECTION (Google Sheets) ---
+# --- 3. WHITEBOARD CONNECTION ---
 def connect_to_whiteboard():
     if not SHEETS_AVAILABLE:
         return None
-    
     if "gcp_service_account" not in st.secrets:
         return None
-
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = json.loads(st.secrets["gcp_service_account"])
@@ -66,7 +64,6 @@ def push_score_to_sheet(wod_title, result_text):
     sheet = connect_to_whiteboard()
     if not sheet:
         return False
-        
     try:
         worksheet = sheet.get_worksheet(1)
         local_tz = pytz.timezone("US/Mountain")
@@ -78,18 +75,16 @@ def push_score_to_sheet(wod_title, result_text):
         st.error("Upload Failed: " + str(e))
         return False
 
-# --- 4. UTILITY: The Janitor (Safe Mode) ---
+# --- 4. UTILITY: JANITOR (SAFE MODE) ---
 def sanitize_text(text):
     if not text: return ""
     
-    # 1. Clean weird quote characters
     replacements = {"â": "'", "’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."}
     for bad, good in replacements.items():
         text = text.replace(bad, good)
         
     soup = BeautifulSoup(text, "html.parser")
     
-    # 2. Structural Spacing (HTML Level)
     for tag in soup.find_all(['br', 'p', 'div', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'tr']):
         tag.insert_before("\n")
         tag.insert_after("\n")
@@ -97,17 +92,14 @@ def sanitize_text(text):
     for li in soup.find_all('li'):
         li.insert_before("• ")
 
-    # 3. Extract text
     text = soup.get_text(separator="\n", strip=True)
     text = unicodedata.normalize("NFKD", text)
     
-    # 4. General Cleanup
     text = text.replace("Resources:", "\n\n**Resources:**\n")
     text = re.sub(r'\n{3,}', '\n\n', text)
-    
     return text.strip()
 
-# --- 5. CORE LOGIC: The Context-Aware Mapper ---
+# --- 5. CORE LOGIC: PARSER ---
 def parse_workout_data(wod_data):
     if isinstance(wod_data, str):
         full_blob = sanitize_text(wod_data)
@@ -143,7 +135,7 @@ def parse_workout_data(wod_data):
     workout_end = indices[0]['start'] if indices else len(full_blob)
     raw_workout = full_blob[:workout_end].strip()
     
-    # Surgical splitting of mashed lines (Visual Fix)
+    # Surgical Splitter
     formatted_workout = re.sub(r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])', '\n', raw_workout)
     parsed['workout'] = formatted_workout
 
@@ -166,7 +158,7 @@ def parse_workout_data(wod_data):
     parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
     return parsed
 
-# --- 6. NETWORK: The Fetcher ---
+# --- 6. NETWORK: FETCHER ---
 def fetch_wod_content():
     if not SCRAPER_AVAILABLE:
         return {"error": "Scraper Module Missing"}
@@ -228,20 +220,21 @@ with st.sidebar:
 
 # --- APP FLOW ---
 
-# 1. RECOVERY
+# 1. RECOVERY CHECK
 if st.session_state['wod_in_progress'] and st.session_state['app_mode'] == 'HOME':
     st.warning("⚠️ **UNFINISHED WORKOUT DETECTED**")
     st.write("You have an active session in the cache.")
+    
+    # FLATTENED LOGIC (Fixes Indentation Risk)
     c1, c2 = st.columns(2)
-    with c1:
-        if st.button("RESUME WORKOUT", use_container_width=True):
-            st.session_state['app_mode'] = 'WORKBENCH'
-            st.rerun()
-    with c2:
-        if st.button("START NEW WOD", use_container_width=True):
-            st.session_state['wod_in_progress'] = False
-            st.session_state['app_mode'] = 'HOME'
-            st.rerun()
+    if c1.button("RESUME WORKOUT", use_container_width=True):
+        st.session_state['app_mode'] = 'WORKBENCH'
+        st.rerun()
+        
+    if c2.button("START NEW WOD", use_container_width=True):
+        st.session_state['wod_in_progress'] = False
+        st.session_state['app_mode'] = 'HOME'
+        st.rerun()
 
 # 2. HOME SCREEN
 elif st.session_state['app_mode'] == 'HOME':
@@ -262,7 +255,6 @@ elif st.session_state['app_mode'] == 'HOME':
         st.subheader(wod.get('title', 'Daily WOD'))
         
         raw_workout = wod.get('workout', 'No Data')
-        # Double space replacement for Streamlit Markdown
         formatted_workout = raw_workout.replace("\n", "  \n")
         st.info(formatted_workout)
         
@@ -279,6 +271,73 @@ elif st.session_state['app_mode'] == 'HOME':
         if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
             with st.expander("⚖️ Scaling Options"):
                 t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+                with t1: st.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
+                with t2: st.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
+                with t3: st.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
+
+        if wod.get('cues'):
+            with st.expander("📢 Coaching Cues"):
+                st.markdown(wod['cues'].replace("\n", "  \n"))
+
+# 3. WORKBENCH
+elif st.session_state['app_mode'] == 'WORKBENCH':
+    st.caption("🏋️ ACTIVE SESSION")
+    wod = st.session_state.get('current_wod', {})
+    title_safe = wod.get('title', 'Unknown WOD')
+    st.success("Target: " + title_safe)
+    
+    raw_workout = str(wod.get('workout', ''))
+    lines = raw_workout.split('\n')
+    
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        is_header = False
+        if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+            is_header = True
+            
+        is_movement = False
+        if line.startswith("•") or line[0].isdigit():
+            is_movement = True
+            
+        if is_header and not is_movement:
+            st.markdown("**" + line + "**")
+        elif is_movement:
+            key_id = "chk_" + str(idx)
+            clean_text = line.replace("• ", "").strip()
+            st.checkbox(clean_text, key=key_id)
+        else:
+            st.markdown(line)
+            
+    st.divider()
+    st.markdown("#### 🏁 Post Score")
+    result_input = st.text_input("Final Time / Load / Score", key="res_input")
+    
+    c1, c2 = st.columns(2)
+    # FLATTENED LOGIC (Fixes Indentation Risk)
+    if c1.button("❌ Exit (No Save)"):
+        st.session_state['app_mode'] = 'HOME'
+        st.rerun()
+
+    if c2.button("💾 Log to Whiteboard", type="primary"):
+        if not result_input:
+            st.error("Enter a score to log.")
+        else:
+            st.toast("Syncing to Cloud...")
+            success = push_score_to_sheet(title_safe, result_input)
+            if success:
+                st.success("Score Posted!")
+                st.session_state['wod_in_progress'] = False
+                st.session_state['app_mode'] = 'HOME'
+                st.rerun()
+            else:
+                st.error("Sync Failed.")
+
+# === END OF SYSTEM FILE ===
+t.tabs(["Rx / General", "Intermediate", "Beginner"])
                 with t1: st.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
                 with t2: st.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
                 with t3: st.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
