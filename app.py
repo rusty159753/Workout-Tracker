@@ -109,7 +109,6 @@ def sanitize_text(text):
 
 # --- 5. CORE LOGIC: The Context-Aware Mapper ---
 def parse_workout_data(wod_data):
-    # Step 1: Sanitize the blob safely (HTML only)
     if isinstance(wod_data, str):
         full_blob = sanitize_text(wod_data)
         title = "Workout of the Day"
@@ -119,7 +118,6 @@ def parse_workout_data(wod_data):
         full_blob = sanitize_text(raw_main + "\n\n" + raw_stim)
         title = wod_data.get('title', 'Workout of the Day')
 
-    # Step 2: Slice the blob into sections
     headers = {
         "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
         "Scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
@@ -143,22 +141,16 @@ def parse_workout_data(wod_data):
     }
 
     workout_end = indices[0]['start'] if indices else len(full_blob)
-    
-    # Step 3: AGGRESSIVE FORMATTING (Applied ONLY to the Workout)
     raw_workout = full_blob[:workout_end].strip()
     
-    # The "Mashed Number" Fix: Only runs on the workout list
-    # Finds a lowercase letter -> space -> number -> space/letter
-    # Ex: "walk 2 candlestick" -> "walk\n2 candlestick"
+    # Surgical splitting of mashed lines (Visual Fix)
     formatted_workout = re.sub(r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])', '\n', raw_workout)
     parsed['workout'] = formatted_workout
 
-    # Footer cleanup
     footer_match = re.search(r"(Post\s+time\s+to\s+comments|Post\s+rounds\s+to\s+comments|Post\s+to\s+comments)", parsed['workout'], re.IGNORECASE)
     if footer_match:
         parsed['workout'] = parsed['workout'][:footer_match.start()].strip()
 
-    # Step 4: Map the rest (Keeping Scaling/Strategy natural)
     for i, item in enumerate(indices):
         key = item['key']
         start = item['end']
@@ -190,7 +182,6 @@ def fetch_wod_content():
             response.encoding = 'utf-8' 
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Strategy A
             next_data = soup.find('script', id='__NEXT_DATA__')
             if next_data:
                 try:
@@ -202,7 +193,6 @@ def fetch_wod_content():
                         return parsed
                 except: pass 
 
-            # Strategy B
             article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
             if article:
                 parsed = parse_workout_data(str(article))
@@ -219,7 +209,6 @@ def fetch_wod_content():
 st.title("TRI⚡DRIVE")
 st.markdown("---") 
 
-# --- STATE MANAGEMENT ---
 if 'app_mode' not in st.session_state:
     st.session_state['app_mode'] = 'HOME'
 if 'current_wod' not in st.session_state:
@@ -227,7 +216,6 @@ if 'current_wod' not in st.session_state:
 if 'wod_in_progress' not in st.session_state:
     st.session_state['wod_in_progress'] = False
 
-# Sidebar
 with st.sidebar:
     st.header("⚙️ Box Settings")
     if st.button("🔄 Force Reset", type="primary"):
@@ -273,7 +261,6 @@ elif st.session_state['app_mode'] == 'HOME':
     else:
         st.subheader(wod.get('title', 'Daily WOD'))
         
-        # UI FORMATTING FIX
         raw_workout = wod.get('workout', 'No Data')
         # Double space replacement for Streamlit Markdown
         formatted_workout = raw_workout.replace("\n", "  \n")
@@ -281,6 +268,84 @@ elif st.session_state['app_mode'] == 'HOME':
         
         if st.button("⚡ START WORKOUT", use_container_width=True):
             st.session_state['app_mode'] = 'WORKBENCH'
+            st.session_state['wod_in_progress'] = True 
+            st.rerun()
+            
+        st.divider()
+        if wod.get('strategy'):
+            with st.expander("🧠 Stimulus & Strategy"):
+                st.markdown(wod['strategy'].replace("\n", "  \n"))
+        
+        if any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')]):
+            with st.expander("⚖️ Scaling Options"):
+                t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+                with t1: st.markdown(str(wod.get('scaling', '')).replace("\n", "  \n"))
+                with t2: st.markdown(str(wod.get('intermediate', '')).replace("\n", "  \n"))
+                with t3: st.markdown(str(wod.get('beginner', '')).replace("\n", "  \n"))
+
+        if wod.get('cues'):
+            with st.expander("📢 Coaching Cues"):
+                st.markdown(wod['cues'].replace("\n", "  \n"))
+
+# 3. WORKBENCH
+elif st.session_state['app_mode'] == 'WORKBENCH':
+    st.caption("🏋️ ACTIVE SESSION")
+    wod = st.session_state.get('current_wod', {})
+    title_safe = wod.get('title', 'Unknown WOD')
+    st.success("Target: " + title_safe)
+    
+    raw_workout = str(wod.get('workout', ''))
+    lines = raw_workout.split('\n')
+    
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        is_header = False
+        if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+            is_header = True
+            
+        is_movement = False
+        if line.startswith("•") or line[0].isdigit():
+            is_movement = True
+            
+        if is_header and not is_movement:
+            st.markdown("**" + line + "**")
+        elif is_movement:
+            key_id = "chk_" + str(idx)
+            clean_text = line.replace("• ", "").strip()
+            st.checkbox(clean_text, key=key_id)
+        else:
+            st.markdown(line)
+            
+    st.divider()
+    st.markdown("#### 🏁 Post Score")
+    result_input = st.text_input("Final Time / Load / Score", key="res_input")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("❌ Exit (No Save)"):
+            st.session_state['app_mode'] = 'HOME'
+            st.rerun()
+    with c2:
+        if st.button("💾 Log to Whiteboard", type="primary"):
+            if not result_input:
+                st.error("Enter a score to log.")
+            else:
+                st.toast("Syncing to Cloud...")
+                success = push_score_to_sheet(title_safe, result_input)
+                if success:
+                    st.success("Score Posted!")
+                    st.session_state['wod_in_progress'] = False
+                    st.session_state['app_mode'] = 'HOME'
+                    st.rerun()
+                else:
+                    st.error("Sync Failed.")
+
+# === END OF SYSTEM FILE ===
+      st.session_state['app_mode'] = 'WORKBENCH'
             st.session_state['wod_in_progress'] = True 
             st.rerun()
             
