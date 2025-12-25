@@ -7,7 +7,11 @@ import unicodedata
 import hashlib
 from bs4 import BeautifulSoup
 
-# --- 0. CRITICAL DEPENDENCIES ---
+# --- 0. SAFETY CONSTANTS (The "Invisible" Fix) ---
+# We define special characters here so they don't break logic later
+NL = "  \n"
+
+# --- 1. CRITICAL DEPENDENCIES ---
 try:
     import gspread
     from oauth2client.service_account import ServiceAccountCredentials
@@ -21,10 +25,10 @@ try:
 except ImportError:
     SCRAPER_AVAILABLE = False
 
-# --- 1. CONFIGURATION ---
+# --- 2. CONFIGURATION ---
 st.set_page_config(page_title="TRI DRIVE", page_icon="⚡")
 
-# --- 2. GLOBAL STYLES ---
+# --- 3. GLOBAL STYLES ---
 st.markdown("""
 <style>
     div[data-testid="stAlert"], div[data-testid="stNotification"] {
@@ -43,253 +47,292 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. UTILITY FUNCTIONS (THE FIX) ---
-def format_multiline(text):
+# --- 4. UTILITY MODULES ---
+
+def safe_format(text):
     """
-    Safely formats text for Streamlit Markdown.
-    Moves the newline logic here to prevent SyntaxErrors in the UI layer.
+    The firewall for text. Converts raw text to Markdown-safe text
+    using the global NL constant. No backslashes in UI code.
     """
     if not text:
         return ""
-    # Convert string, ensure it exists
-    safe_text = str(text)
-    # The double space + newline is required for markdown line breaks
-    return safe_text.replace("\n", "  \n")
+    return str(text).replace("\n", NL)
 
-# --- 4. WHITEBOARD CONNECTION ---
 def connect_to_whiteboard():
-    if not SHEETS_AVAILABLE:
-        return None
-    if "gcp_service_account" not in st.secrets:
+    if not SHEETS_AVAILABLE or "gcp_service_account" not in st.secrets:
         return None
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = json.loads(st.secrets["gcp_service_account"])
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        sheet = client.open("TRI_DRIVE_DATA")
-        return sheet
+        return client.open("TRI_DRIVE_DATA")
     except Exception as e:
-        st.error("Whiteboard Link Error: " + str(e))
+        st.error(f"Whiteboard Error: {e}")
         return None
 
 def push_score_to_sheet(wod_title, result_text):
     sheet = connect_to_whiteboard()
-    if not sheet:
-        return False
+    if not sheet: return False
     try:
-        worksheet = sheet.get_worksheet(1)
-        local_tz = pytz.timezone("US/Mountain")
-        timestamp = datetime.datetime.now(local_tz).strftime("%Y-%m-%d")
-        row = [timestamp, wod_title, result_text]
-        worksheet.append_row(row)
+        ws = sheet.get_worksheet(1)
+        tz = pytz.timezone("US/Mountain")
+        now = datetime.datetime.now(tz).strftime("%Y-%m-%d")
+        ws.append_row([now, wod_title, result_text])
         return True
     except Exception as e:
-        st.error("Upload Failed: " + str(e))
+        st.error(f"Sync Failed: {e}")
         return False
 
-# --- 5. UTILITY: JANITOR (SAFE MODE) ---
+# --- 5. PARSING ENGINE (Janitor Logic) ---
+
 def sanitize_text(text):
     if not text: return ""
     
-    # Clean smart quotes and weird characters
-    replacements = {
-        "â": "'", "’": "'", "‘": "'", "“": '"', "”": '"', 
-        "–": "-", "—": "-", "…": "..."
-    }
-    for bad, good in replacements.items():
-        text = text.replace(bad, good)
+    # Character normalization
+    chars = {"â": "'", "’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-"}
+    for b, g in chars.items():
+        text = text.replace(b, g)
         
     soup = BeautifulSoup(text, "html.parser")
     
-    # Add spacing around block elements
-    block_tags = ['br', 'p', 'div', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'tr']
-    for tag in soup.find_all(block_tags):
+    # Structure enforcement
+    for tag in soup.find_all(['br', 'p', 'div', 'li', 'h1', 'h2', 'tr']):
         tag.insert_before("\n")
         tag.insert_after("\n")
         
-    # Add bullets to list items
     for li in soup.find_all('li'):
         li.insert_before("• ")
 
-    # Extract and normalize text
     text = soup.get_text(separator="\n", strip=True)
     text = unicodedata.normalize("NFKD", text)
-    
-    # Final cleanup
-    text = text.replace("Resources:", "\n\n**Resources:**\n")
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
+    return text.replace("Resources:", "\n\n**Resources:**\n").strip()
 
-# --- 6. CORE LOGIC: PARSER ---
 def parse_workout_data(wod_data):
-    # Handle string vs dictionary input
+    # Input normalization
     if isinstance(wod_data, str):
-        full_blob = sanitize_text(wod_data)
+        blob = sanitize_text(wod_data)
         title = "Workout of the Day"
     else:
-        raw_main = wod_data.get('main_text', '')
-        raw_stim = wod_data.get('stimulus', '')
-        full_blob = sanitize_text(raw_main + "\n\n" + raw_stim)
+        m = wod_data.get('main_text', '')
+        s = wod_data.get('stimulus', '')
+        blob = sanitize_text(m + "\n\n" + s)
         title = wod_data.get('title', 'Workout of the Day')
 
-    # Define regex patterns for sections
-    headers = {
-        "Stimulus": re.compile(r"(Stimulus\s+and\s+Strategy|Stimulus):", re.IGNORECASE),
-        "Scaling": re.compile(r"(Scaling|Scaling Options):", re.IGNORECASE),
-        "Intermediate": re.compile(r"Intermediate\s+option:", re.IGNORECASE),
-        "Beginner": re.compile(r"Beginner\s+option:", re.IGNORECASE),
-        "Cues": re.compile(r"(Coaching\s+cues|Coaching\s+Tips):", re.IGNORECASE)
+    # Regex Extraction Patterns
+    patterns = {
+        "Stimulus": r"(Stimulus\s+and\s+Strategy|Stimulus):",
+        "Scaling": r"(Scaling|Scaling Options):",
+        "Intermediate": r"Intermediate\s+option:",
+        "Beginner": r"Beginner\s+option:",
+        "Cues": r"(Coaching\s+cues|Coaching\s+Tips):"
     }
 
-    # Find section start points
     indices = []
-    for key, pattern in headers.items():
-        match = pattern.search(full_blob)
+    for k, p in patterns.items():
+        match = re.search(p, blob, re.IGNORECASE)
         if match:
-            indices.append({"key": key, "start": match.start(), "end": match.end()})
+            indices.append({"key": k, "start": match.start(), "end": match.end()})
     
     indices.sort(key=lambda x: x['start'])
     
-    # Initialize output dictionary
+    # Result Container
     parsed = {
         "workout": "", "strategy": "", "scaling": "", 
-        "intermediate": "", "beginner": "", "cues": "",
+        "intermediate": "", "beginner": "", "cues": "", 
         "title": title
     }
 
-    # Extract the main workout text
-    workout_end = indices[0]['start'] if indices else len(full_blob)
-    raw_workout = full_blob[:workout_end].strip()
-    
-    # Surgical Splitter: Fix mashed lines (e.g. "walk 2 reps")
-    split_pattern = r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])'
-    formatted_workout = re.sub(split_pattern, '\n', raw_workout)
-    parsed['workout'] = formatted_workout
+    # Extract WOD List
+    w_end = indices[0]['start'] if indices else len(blob)
+    raw_w = blob[:w_end].strip()
+    # The "Mashed Line" Fix
+    parsed['workout'] = re.sub(r'(?<=[a-z])\s+(?=\d+\s+[a-zA-Z])', '\n', raw_w)
 
-    # Remove footer noise
-    footer_pattern = r"(Post\s+time\s+to\s+comments|Post\s+rounds|Post\s+to\s+comments)"
-    footer_match = re.search(footer_pattern, parsed['workout'], re.IGNORECASE)
-    if footer_match:
-        parsed['workout'] = parsed['workout'][:footer_match.start()].strip()
-
-    # Map remaining sections
+    # Extract Sections
     for i, item in enumerate(indices):
-        key = item['key']
-        start = item['end']
-        end = indices[i+1]['start'] if (i + 1 < len(indices)) else len(full_blob)
-        content = full_blob[start:end].strip()
+        k = item['key']
+        s = item['end']
+        e = indices[i+1]['start'] if (i+1 < len(indices)) else len(blob)
+        content = blob[s:e].strip()
         
-        if key == "Stimulus": parsed['strategy'] = content
-        elif key == "Scaling": parsed['scaling'] = content
-        elif key == "Intermediate": parsed['intermediate'] = content
-        elif key == "Beginner": parsed['beginner'] = content
-        elif key == "Cues": parsed['cues'] = content
+        if k == "Stimulus": parsed['strategy'] = content
+        elif k == "Scaling": parsed['scaling'] = content
+        elif k == "Intermediate": parsed['intermediate'] = content
+        elif k == "Beginner": parsed['beginner'] = content
+        elif k == "Cues": parsed['cues'] = content
 
-    parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
+    parsed['hash'] = hashlib.md5(blob.encode()).hexdigest()
     return parsed
 
-# --- 7. NETWORK: FETCHER ---
+# --- 6. NETWORK MODULE ---
+
 def fetch_wod_content():
-    if not SCRAPER_AVAILABLE:
-        return {"error": "Scraper Module Missing"}
-        
-    local_tz = pytz.timezone("US/Mountain")
-    today_id = datetime.datetime.now(local_tz).strftime("%y%m%d")
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-
+    if not SCRAPER_AVAILABLE: return {"error": "Scraper Missing"}
+    
+    tz = pytz.timezone("US/Mountain")
+    tid = datetime.datetime.now(tz).strftime("%y%m%d")
+    scraper = cloudscraper.create_scraper()
+    
     try:
-        url = "https://www.crossfit.com/" + today_id
-        response = scraper.get(url, timeout=15)
+        url = "https://www.crossfit.com/" + tid
+        res = scraper.get(url, timeout=15)
         
-        if response.status_code == 200:
-            response.encoding = 'utf-8' 
-            soup = BeautifulSoup(response.text, 'html.parser')
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
             
-            # Strategy A: JSON Data
-            next_data = soup.find('script', id='__NEXT_DATA__')
-            if next_data:
+            # JSON Strategy
+            script = soup.find('script', id='__NEXT_DATA__')
+            if script:
                 try:
-                    json_payload = json.loads(next_data.string)
-                    wod_data = json_payload.get('props', {}).get('pageProps', {}).get('wod', {})
-                    if wod_data:
-                        parsed = parse_workout_data(wod_data)
-                        parsed['id'] = today_id
+                    data = json.loads(script.string).get('props', {}).get('pageProps', {}).get('wod', {})
+                    if data:
+                        parsed = parse_workout_data(data)
+                        parsed['id'] = tid
                         return parsed
-                except: pass 
-
-            # Strategy B: HTML Scrape
-            article = soup.find('article') or soup.find('div', {'class': re.compile(r'content|wod')}) or soup.find('main')
+                except: pass
+            
+            # HTML Strategy
+            article = soup.find('article') or soup.find('main')
             if article:
                 parsed = parse_workout_data(str(article))
-                parsed['id'] = today_id
-                parsed['title'] = "WOD " + today_id
+                parsed['id'] = tid
                 return parsed
-
-            return {"error": "Parser Mismatch."}
-        return {"error": "HTTP Error " + str(response.status_code)}
+                
+        return {"error": f"HTTP {res.status_code}"}
     except Exception as e:
-        return {"error": "Critical Failure: " + str(e)}
+        return {"error": str(e)}
 
-# --- 8. UI LAYER ---
-st.title("TRI⚡DRIVE")
-st.markdown("---") 
+# --- 7. UI MODULES (Indentation Safe) ---
 
-# State Management
-if 'app_mode' not in st.session_state:
-    st.session_state['app_mode'] = 'HOME'
-if 'current_wod' not in st.session_state:
-    st.session_state['current_wod'] = {}
-if 'wod_in_progress' not in st.session_state:
-    st.session_state['wod_in_progress'] = False
-
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Box Settings")
-    if st.button("🔄 Force Reset", type="primary"):
-        st.session_state.clear()
-        st.rerun()
-    
-    if SHEETS_AVAILABLE and "gcp_service_account" in st.secrets:
-        st.success("Whiteboard: LINKED")
-    else:
-        st.warning("Whiteboard: OFFLINE")
-
-# --- APP FLOW ---
-
-# 1. RECOVERY CHECK
-if st.session_state['wod_in_progress'] and st.session_state['app_mode'] == 'HOME':
-    st.warning("⚠️ **UNFINISHED WORKOUT DETECTED**")
-    st.write("You have an active session in the cache.")
-    
-    # Flattened Button Logic (No Nesting)
-    c1, c2 = st.columns(2)
-    if c1.button("RESUME WORKOUT", use_container_width=True):
-        st.session_state['app_mode'] = 'WORKBENCH'
-        st.rerun()
-        
-    if c2.button("START NEW WOD", use_container_width=True):
-        st.session_state['wod_in_progress'] = False
-        st.session_state['app_mode'] = 'HOME'
-        st.rerun()
-
-# 2. HOME SCREEN
-elif st.session_state['app_mode'] == 'HOME':
+def render_home():
+    """Renders the Home Screen. Flat indentation."""
     wod = st.session_state.get('current_wod', {})
     
-    # Fetch Data if missing
+    # 1. Fetch Logic
     if not wod or "error" in wod:
         st.info("📡 Fetching Programming...") 
         wod = fetch_wod_content()
-        
         if "error" not in wod:
             st.session_state['current_wod'] = wod
-            st.rerun() 
+            st.rerun()
         else:
-            st.error("⚠️ " + str(wod.get('error', 'Unknown Error')))
-            if st.button("🔄 Retry Connection"):
+            st.error(wod['error'])
+            if st.button("Retry"):
                 st.session_state['current_wod'] = {}
                 st.rerun()
+        return
+
+    # 2. Display Logic
+    st.subheader(wod.get('title', 'WOD'))
+    
+    # SAFE FORMATTING: Using the helper function
+    main_text = safe_format(wod.get('workout', ''))
+    st.info(main_text)
+    
+    if st.button("⚡ START", use_container_width=True):
+        st.session_state['app_mode'] = 'WORKBENCH'
+        st.session_state['wod_in_progress'] = True 
+        st.rerun()
+        
+    st.divider()
+    
+    # Strategy
+    if wod.get('strategy'):
+        strat_text = safe_format(wod['strategy'])
+        st.expander("🧠 Strategy").markdown(strat_text)
+        
+    # Scaling (Decoupled & Safe)
+    has_scale = any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')])
+    if has_scale:
+        st.caption("⚖️ Scaling")
+        t1, t2, t3 = st.tabs(["Rx", "Int", "Beg"])
+        
+        txt_rx = safe_format(wod.get('scaling', ''))
+        txt_int = safe_format(wod.get('intermediate', ''))
+        txt_beg = safe_format(wod.get('beginner', ''))
+        
+        t1.markdown(txt_rx)
+        t2.markdown(txt_int)
+        t3.markdown(txt_beg)
+        
+    # Cues
+    if wod.get('cues'):
+        cue_text = safe_format(wod['cues'])
+        st.expander("📢 Cues").markdown(cue_text)
+
+def render_workbench():
+    """Renders the Active Session. Flat indentation."""
+    wod = st.session_state.get('current_wod', {})
+    st.success("Target: " + wod.get('title', 'WOD'))
+    
+    lines = str(wod.get('workout', '')).split('\n')
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        if line.endswith(":") or "rounds" in line.lower():
+            st.markdown(f"**{line}**")
+        elif line.startswith("•") or line[0].isdigit():
+            # Clean bullet points
+            clean = line.replace("• ", "").strip()
+            st.checkbox(clean, key=f"chk_{idx}")
+        else:
+            st.text(line)
+            
+    st.divider()
+    res = st.text_input("Score", key="res_input")
+    
+    c1, c2 = st.columns(2)
+    if c1.button("❌ Exit"):
+        st.session_state['app_mode'] = 'HOME'
+        st.rerun()
+        
+    if c2.button("💾 Log", type="primary"):
+        if res and push_score_to_sheet(wod.get('title', 'WOD'), res):
+            st.success("Logged!")
+            st.session_state['wod_in_progress'] = False
+            st.session_state['app_mode'] = 'HOME'
+            st.rerun()
+
+# --- 8. MAIN APP CONTROLLER ---
+
+def main():
+    # Initialize State
+    if 'app_mode' not in st.session_state: st.session_state['app_mode'] = 'HOME'
+    if 'current_wod' not in st.session_state: st.session_state['current_wod'] = {}
+    if 'wod_in_progress' not in st.session_state: st.session_state['wod_in_progress'] = False
+
+    # Sidebar Controls
+    with st.sidebar:
+        st.header("⚙️ Box Settings")
+        if st.button("🔄 Force Reset"):
+            st.session_state.clear()
+            st.rerun()
+
+    # Recovery Logic
+    if st.session_state['wod_in_progress'] and st.session_state['app_mode'] == 'HOME':
+        st.warning("⚠️ UNFINISHED SESSION")
+        c1, c2 = st.columns(2)
+        if c1.button("RESUME"):
+            st.session_state['app_mode'] = 'WORKBENCH'
+            st.rerun()
+        if c2.button("NEW WOD"):
+            st.session_state['wod_in_progress'] = False
+            st.rerun()
+        return
+
+    # Router
+    if st.session_state['app_mode'] == 'HOME':
+        render_home()
+    elif st.session_state['app_mode'] == 'WORKBENCH':
+        render_workbench()
+
+if __name__ == "__main__":
+    main()
+
     else:
         # Display WOD
         st.subheader(wod.get('title', 'Daily WOD'))
