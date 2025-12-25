@@ -43,7 +43,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. WHITEBOARD CONNECTION ---
+# --- 3. UTILITY FUNCTIONS (THE FIX) ---
+def format_multiline(text):
+    """
+    Safely formats text for Streamlit Markdown.
+    Moves the newline logic here to prevent SyntaxErrors in the UI layer.
+    """
+    if not text:
+        return ""
+    # Convert string, ensure it exists
+    safe_text = str(text)
+    # The double space + newline is required for markdown line breaks
+    return safe_text.replace("\n", "  \n")
+
+# --- 4. WHITEBOARD CONNECTION ---
 def connect_to_whiteboard():
     if not SHEETS_AVAILABLE:
         return None
@@ -75,7 +88,7 @@ def push_score_to_sheet(wod_title, result_text):
         st.error("Upload Failed: " + str(e))
         return False
 
-# --- 4. UTILITY: JANITOR (SAFE MODE) ---
+# --- 5. UTILITY: JANITOR (SAFE MODE) ---
 def sanitize_text(text):
     if not text: return ""
     
@@ -108,7 +121,7 @@ def sanitize_text(text):
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-# --- 5. CORE LOGIC: PARSER ---
+# --- 6. CORE LOGIC: PARSER ---
 def parse_workout_data(wod_data):
     # Handle string vs dictionary input
     if isinstance(wod_data, str):
@@ -176,7 +189,7 @@ def parse_workout_data(wod_data):
     parsed['hash'] = hashlib.md5(full_blob.encode()).hexdigest()
     return parsed
 
-# --- 6. NETWORK: FETCHER ---
+# --- 7. NETWORK: FETCHER ---
 def fetch_wod_content():
     if not SCRAPER_AVAILABLE:
         return {"error": "Scraper Module Missing"}
@@ -218,7 +231,7 @@ def fetch_wod_content():
     except Exception as e:
         return {"error": "Critical Failure: " + str(e)}
 
-# --- 7. UI LAYER ---
+# --- 8. UI LAYER ---
 st.title("TRI⚡DRIVE")
 st.markdown("---") 
 
@@ -281,13 +294,110 @@ elif st.session_state['app_mode'] == 'HOME':
         # Display WOD
         st.subheader(wod.get('title', 'Daily WOD'))
         
-        raw_workout = wod.get('workout', 'No Data')
-        formatted_workout = raw_workout.replace("\n", "  \n")
+        # Use Helper Function to Avoid Syntax Errors
+        formatted_workout = format_multiline(wod.get('workout', 'No Data'))
         st.info(formatted_workout)
         
         if st.button("⚡ START WORKOUT", use_container_width=True):
             st.session_state['app_mode'] = 'WORKBENCH'
             st.session_state['wod_in_progress'] = True 
+            st.rerun()
+            
+        st.divider()
+        
+        # Strategy Section (Flattened)
+        if wod.get('strategy'):
+            strat_exp = st.expander("🧠 Stimulus & Strategy")
+            strat_txt = format_multiline(wod['strategy'])
+            strat_exp.markdown(strat_txt)
+        
+        # Scaling Section (Flattened & Protected)
+        has_scaling = any([wod.get('scaling'), wod.get('intermediate'), wod.get('beginner')])
+        
+        if has_scaling:
+            st.caption("⚖️ Scaling Options")
+            # Create Tabs directly
+            t1, t2, t3 = st.tabs(["Rx / General", "Intermediate", "Beginner"])
+            
+            # Use Helper Function instead of replace()
+            # This keeps the line short and safe from syntax wrapping
+            txt_rx = format_multiline(wod.get('scaling', ''))
+            txt_int = format_multiline(wod.get('intermediate', ''))
+            txt_beg = format_multiline(wod.get('beginner', ''))
+            
+            # Render to Tabs
+            t1.markdown(txt_rx)
+            t2.markdown(txt_int)
+            t3.markdown(txt_beg)
+
+        # Cues Section (Flattened)
+        if wod.get('cues'):
+            cues_exp = st.expander("📢 Coaching Cues")
+            cues_txt = format_multiline(wod['cues'])
+            cues_exp.markdown(cues_txt)
+
+# 3. WORKBENCH
+elif st.session_state['app_mode'] == 'WORKBENCH':
+    st.caption("🏋️ ACTIVE SESSION")
+    wod = st.session_state.get('current_wod', {})
+    title_safe = wod.get('title', 'Unknown WOD')
+    st.success("Target: " + title_safe)
+    
+    raw_workout = str(wod.get('workout', ''))
+    lines = raw_workout.split('\n')
+    
+    st.markdown("### 📋 Checklist")
+    
+    for idx, line in enumerate(lines):
+        line = line.strip()
+        if not line: continue
+        
+        # Header Detection
+        is_header = False
+        if line.endswith(":") or "rounds" in line.lower() or "amrap" in line.lower():
+            is_header = True
+            
+        # Movement Detection
+        is_movement = False
+        if line.startswith("•") or line[0].isdigit():
+            is_movement = True
+            
+        if is_header and not is_movement:
+            st.markdown("**" + line + "**")
+        elif is_movement:
+            key_id = "chk_" + str(idx)
+            clean_text = line.replace("• ", "").strip()
+            st.checkbox(clean_text, key=key_id)
+        else:
+            st.markdown(line)
+            
+    st.divider()
+    st.markdown("#### 🏁 Post Score")
+    result_input = st.text_input("Final Time / Load / Score", key="res_input")
+    
+    # Flattened Exit/Save Logic
+    c1, c2 = st.columns(2)
+    
+    if c1.button("❌ Exit (No Save)"):
+        st.session_state['app_mode'] = 'HOME'
+        st.rerun()
+
+    if c2.button("💾 Log to Whiteboard", type="primary"):
+        if not result_input:
+            st.error("Enter a score to log.")
+        else:
+            st.toast("Syncing to Cloud...")
+            success = push_score_to_sheet(title_safe, result_input)
+            if success:
+                st.success("Score Posted!")
+                st.session_state['wod_in_progress'] = False
+                st.session_state['app_mode'] = 'HOME'
+                st.rerun()
+            else:
+                st.error("Sync Failed.")
+
+# === END OF SYSTEM FILE ===
+ = True 
             st.rerun()
             
         st.divider()
